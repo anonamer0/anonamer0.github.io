@@ -222,12 +222,17 @@ footer{color:var(--faint);font-size:12px;text-align:center;margin:16px 0 8px}
       </div>
       <details class="more"><summary>支撐、壓力、情緒位</summary><div id="lvls" class="lvls"></div></details>
     </div>
+    <div class="row" style="justify-content:space-between">
+      <span class="sub">計畫方向</span>
+      <div class="seg" id="dirMode"><button data-v="auto" class="on">跟趨勢</button><button data-v="long">只看做多</button><button data-v="short">只看做空</button></div>
+    </div>
     <div id="cards" class="cards"></div>
     <div class="card" id="custom">
       <h2>自訂一單 <small>做空、現貨、逆勢都在這</small></h2>
       <div class="row">
         <div class="seg" id="cMarket"><button data-v="futures" class="on">合約</button><button data-v="spot">現貨</button></div>
         <div class="seg" id="cSide"><button data-v="long" class="on">做多</button><button data-v="short">做空</button></div>
+        <div class="seg" id="cMode"><button data-v="isolated" class="on">逐倉</button><button data-v="cross">全倉</button></div>
         <select id="cTerm" style="width:auto"><option value="short">短線</option><option value="mid" selected>中線</option><option value="long">長線</option></select>
         <button id="cAuto" class="on">自動帶入</button>
       </div>
@@ -236,6 +241,7 @@ footer{color:var(--faint);font-size:12px;text-align:center;margin:16px 0 8px}
         <div><label>止損</label><input id="cStop" type="number" step="any"></div>
         <div><label>止盈1(可空)</label><input id="cTp1" type="number" step="any"></div>
         <div><label>止盈2(可空)</label><input id="cTp2" type="number" step="any"></div>
+        <div id="cMarginBox"><label>保證金 U(可空=自動)</label><input id="cMargin" type="number" step="any"></div>
       </div>
       <div id="cOut"></div>
     </div>
@@ -282,6 +288,9 @@ footer{color:var(--faint);font-size:12px;text-align:center;margin:16px 0 8px}
           <div><label>止盈2</label><input id="jTp2" type="number" step="any"></div>
           <div><label>數量</label><input id="jQty" type="number" step="any"></div>
           <div><label>槓桿</label><input id="jLev" type="number" step="1"></div>
+          <div><label>保證金模式</label><select id="jMode"><option value="isolated">逐倉</option><option value="cross">全倉</option></select></div>
+          <div><label>保證金 U</label><input id="jMargin" type="number" step="any"></div>
+          <div><label>爆倉價(抄幣安的)</label><input id="jLiq" type="number" step="any"></div>
         </div>
         <label style="margin-top:8px">進場理由</label><input id="jReason">
         <label class="inl"><input type="checkbox" id="jRules">5 條鐵紀律都做到了</label>
