@@ -223,8 +223,8 @@ footer{color:var(--faint);font-size:12px;text-align:center;margin:16px 0 8px}
       <details class="more"><summary>支撐、壓力、情緒位</summary><div id="lvls" class="lvls"></div></details>
     </div>
     <div class="row" style="justify-content:space-between">
-      <span class="sub">計畫方向</span>
-      <div class="seg" id="dirMode"><button data-v="auto" class="on">跟趨勢</button><button data-v="long">只看做多</button><button data-v="short">只看做空</button></div>
+      <div class="seg" id="stratMode" title="策略"><button data-v="breakout" title="突破才進場,不設止盈、讓利潤跑(回測唯一賺的)">突破順勢</button><button data-v="pullback" title="等回踩支撐/均線進場,固定止盈">回踩進場</button></div>
+      <div class="seg" id="dirMode" title="方向"><button data-v="auto" class="on">跟趨勢</button><button data-v="long">只做多</button><button data-v="short">只做空</button></div>
     </div>
     <div id="cards" class="cards"></div>
     <div class="card" id="custom">

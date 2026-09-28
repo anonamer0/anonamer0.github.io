@@ -83,7 +83,8 @@ const lsSet = (k, v) => { try{ localStorage.setItem(k, v); }catch(e){} };
 const DEF = {total: 890, risk: 2, alloc: {short: 25, mid: 25, long: 25, reserve: 25},
              watch: ['SOLUSDT', '1000PEPEUSDT', 'DOGEUSDT'], sym: 'SOLUSDT', tf: '4h', alertOn: false,
              show: {lv: true, ema: true, bb: true, st: true}, spot: {budget: 130, plans: [], targets: [], lastRebal: 0},
-             params: {adx: 20, stK: 3, regime: false, trail: true},    // 判斷參數(回測室可以換)
+             params: {adx: 20, stK: 3, regime: false, trail: true, bN: 20},   // 判斷參數(回測室可以換)
+             strategy: 'breakout',                                     // breakout 突破順勢(回測唯一賺的)/ pullback 回踩進場
              ntfy: {topic: '', on: false},                             // 手機推播
              dirMode: 'auto'};                                         // 計畫方向:跟趨勢 / 只看做多 / 只看做空
 let db = {settings: {}, trades: [], spot: []}, S;
@@ -322,7 +323,11 @@ function analyze(bars){
   if(strong && emaUp && stUp) dir = 'long';
   if(strong && emaDn && !stUp) dir = 'short';
   const price = bars.at(-1).c;
+  // 突破策略用:最近 N 根的最高/最低(Now = 含最後一根;Prev = 最後一根之前的 N 根)
+  const N = S.params.bN || 20, hl = arr => [Math.max(...arr.map(b => b.h)), Math.min(...arr.map(b => b.l))];
+  const [hiNow, loNow] = hl(closed.slice(-N)), [hiPrev, loPrev] = hl(closed.slice(-N - 1, -1));
   return {dir, e20, e50, atr, adx, price, emaUp, emaDn, strong, stUp, st: ST.line.at(-1), bb,
+          hiNow, loNow, hiPrev, loPrev, lastC: c,
           lv: findLevels(closed.slice(-200), atr, price)};
 }
 
@@ -431,6 +436,38 @@ function makePlan(t, m, h, sym){
   return P;
 }
 
+// 突破順勢:大週期 SuperTrend 定方向 → 主週期 K 棒「收盤」突破前 N 根最高(最低)就進場
+// 止損 2 ATR;不設止盈,每根 K 收盤把止損移到 SuperTrend 線,翻轉就出場(讓賺的單一路跑)
+function makeBreakPlan(t, m, h, sym){
+  const p = st.price[sym] || m.price, N = S.params.bN || 20;
+  const P = {term: t, m, h, sym, price: p, warns: [], strat: 'breakout', noTP: true};
+  const force = sym === S.sym && S.dirMode !== 'auto' ? S.dirMode : null;
+  const trend = h.stUp ? 'long' : 'short', dir = force || trend;
+  const L = dir === 'long', s = L ? 1 : -1, a = m.atr;
+  const rg = st.regime && st.regime.state, against = (rg === 'bear' && L) || (rg === 'bull' && !L);
+  if(!force && against && S.params.regime){
+    P.dir = 'none'; P.status = 'no';
+    P.why = `${TF_NAME[t.htf]}是${SIDE[dir]}方向,但大盤是${REGIME[rg][0]},大盤濾網開著 → 不做`;
+    return P;
+  }
+  P.dir = dir; P.counter = dir !== trend;
+  const fresh = L ? m.lastC > m.hiPrev : m.lastC < m.loPrev;   // 最後一根剛收盤突破
+  const trigger = L ? m.hiNow : m.loNow;
+  const entry = fresh ? p : trigger, stop = entry - s * 2 * a, R = 2 * a;
+  const tp1 = entry + s * 2 * R, tp2 = entry + s * 3 * R;       // 只用來估算,不掛單
+  const {warns: zw, ...z} = sizePlan({L, entry, stop, tp1, tp2, cap: S.total * S.alloc[t.key] / 100, spot: false, name: t.name});
+  Object.assign(P, {entry, stop, tp1, tp2, trigger, fresh, ...z});
+  P.basis = fresh ? `${TF_NAME[t.tf]} 剛收盤${L ? '突破' : '跌破'}前 ${N} 根${L ? '最高' : '最低'} ${fp(L ? m.hiPrev : m.loPrev)}`
+                  : `等 ${TF_NAME[t.tf]} K 棒收盤${L ? '站上' : '跌破'} ${fp(trigger)}(前 ${N} 根${L ? '最高' : '最低'})`;
+  if(P.counter) P.warns.push(['bad', `逆勢:${TF_NAME[t.htf]} SuperTrend 是${trend === 'long' ? '多' : '空'},這張是${SIDE[dir]}。不會自動提醒。`]);
+  if(against) P.warns.push(['bad', `逆大盤:現在是${REGIME[rg][0]}。`]);
+  if(rg === 'bear') P.warns.push(['warn', `熊市:單筆風險自動砍半(${S.risk}% → ${effRisk()}%)。`]);
+  P.warns.push(...zw);
+  if(sym === S.sym) sentiWarns(P);
+  liveStatus(P, p);
+  return P;
+}
+
 // 手動方向的計畫(逆勢或沒趨勢):不看 20 均線,只找支撐壓力;不會自動提醒
 function forcedPlan(P, t, m, h, dir, trendOK){
   const L = dir === 'long', p = P.price;
@@ -455,6 +492,12 @@ function liveStatus(P, p){
   if(P.dir === 'none' || !isFinite(p)) return;
   P.price = p;
   const L = P.dir === 'long';
+  if(P.strat === 'breakout'){
+    // 還沒突破的計畫只是「等」;剛突破的才看有沒有跌回止損
+    if(P.fresh && (L ? p <= P.stop : p >= P.stop)){ P.status = 'no'; P.why = '價格回到止損位,這次突破失敗,等下一次。'; }
+    else P.status = P.fresh ? 'go' : 'wait';
+    return;
+  }
   if(L ? p <= P.stop : p >= P.stop){ P.status = 'no'; P.why = '價格已經打穿止損位,這個計畫作廢,等下一次。'; }
   else if(L ? p <= P.entry + 0.3 * P.m.atr : p >= P.entry - 0.3 * P.m.atr) P.status = 'go';
   else P.status = 'wait';
@@ -489,7 +532,7 @@ function buildPlans(sym){
   st.plans[sym] = TERMS.map(t => {
     const m = d[t.tf], h = d[t.htf];
     if(!m || !h) return {term: t, sym, dir: 'none', status: 'no', warns: [], why: '上市不夠久,資料太少,判斷不了。'};
-    return makePlan(t, m, h, sym);
+    return (S.strategy === 'breakout' ? makeBreakPlan : makePlan)(t, m, h, sym);
   });
 }
 
@@ -573,10 +616,9 @@ function drawLevels(bars){
   const C = st.showCustom && st.custom && st.custom.sym === S.sym ? st.custom : null;   // 自訂一單優先
   const P = C || (st.plans[S.sym] || []).find?.(x => x.term.tf === S.tf && x.dir !== 'none');
   if(P){
-    add(P.entry, '#60a5fa', C ? `自訂${C.L ? '做多' : '做空'}進場` : `${P.term.name}進場`, D.Solid, 2);
+    add(P.entry, '#60a5fa', C ? `自訂${C.L ? '做多' : '做空'}進場` : `${P.term.name}${P.strat === 'breakout' ? '突破' : ''}進場`, D.Solid, 2);
     add(P.stop, '#ef4444', '止損', D.Solid, 2);
-    add(P.tp1, '#22c55e', '止盈1', D.Solid, 2);
-    add(P.tp2, '#22c55e', '止盈2', D.Solid, 2);
+    if(!P.noTP){ add(P.tp1, '#22c55e', '止盈1', D.Solid, 2); add(P.tp2, '#22c55e', '止盈2', D.Solid, 2); }
   }
 
   const d = x => `${fp(x)} <small>(${pc((x - p) / p)})</small>`;
@@ -699,6 +741,10 @@ document.addEventListener('click', () => { if(actx && actx.state === 'suspended'
    ========================================================= */
 function badge(P){
   if(P.status === 'go') return '<span class="badge go">可進場</span>';
+  if(P.status === 'wait' && P.strat === 'breakout'){
+    const past = P.dir === 'long' ? P.price > P.trigger : P.price < P.trigger;
+    return `<span class="badge wait">${past ? '突破中,等收盤' : '等突破 ' + pc((P.trigger - P.price) / P.price)}</span>`;
+  }
   if(P.status === 'wait') return `<span class="badge wait">等回踩 ${pc((P.entry - P.price) / P.price)}</span>`;
   return '<span class="badge no">不做</span>';
 }
@@ -711,25 +757,28 @@ function renderCards(){
 
 // 精簡版計畫:3 個大數字 + 2 行重點 + 最要緊的提醒;其他收進「詳細」
 const SEV = {bad: 0, warn: 1, ok: 2};
-function planView({k, L, sym, E, p, stop, tp1, tp2, z, spot, termName, tip, warns = [], detailRows = [], extra = '', actions = ''}){
+// noTP = true:突破策略,不設止盈、用移動止損讓利潤跑
+function planView({k, L, sym, E, p, stop, tp1, tp2, z, spot, termName, tip, warns = [], detailRows = [], extra = '', actions = '', noTP = false}){
   const rel = x => pc((x - E) / E);
   const ws = warns.slice().sort((a, b) => SEV[a[0]] - SEV[b[0]]);
   const top = ws.find(w => w[0] !== 'ok'), rest = ws.filter(w => w !== top);
   const rows = [
-    ['止盈2 全平', `${fp(tp2)} <small>(${rel(tp2)})</small>`],
+    ...(noTP ? [] : [['止盈2 全平', `${fp(tp2)} <small>(${rel(tp2)})</small>`]]),
     ...detailRows,
     spot ? ['用掉現貨', `${fu(z.notional)} U <small>(可用的 ${z.cap ? (z.notional / z.cap * 100).toFixed(0) : 0}%)</small>`]
          : ['保證金', `${fu(z.margin)} U <small>(這份資金的 ${z.cap ? (z.margin / z.cap * 100).toFixed(0) : 0}%,倉位 ${fu(z.notional)} U)</small>`],
-    ['賺賠比', `止盈1 1:${(Math.abs(tp1 - E) / z.R).toFixed(1)}|止盈2 1:${z.rr2.toFixed(1)}`],
+    ...(noTP ? [] : [['賺賠比', `止盈1 1:${(Math.abs(tp1 - E) / z.R).toFixed(1)}|止盈2 1:${z.rr2.toFixed(1)}`]]),
     ...(spot ? [] : [['約爆倉價', `${fp(z.liq)} <small>(${rel(z.liq)})</small>`]]),
   ];
   return `<div class="kpis">
       <div><small>進場</small><b>${fp(E)}</b><small>${Math.abs(E - p) / p < 1e-6 ? '就是現價' : '離現價 ' + pc((E - p) / p)}</small></div>
       <div><small>止損</small><b class="r">${fp(stop)}</b><small>${rel(stop)}</small></div>
-      <div><small>止盈1 平一半</small><b class="g">${fp(tp1)}</b><small>${rel(tp1)}</small></div>
+      ${noTP ? '<div><small>止盈</small><b class="g">不設</b><small>跟著 SuperTrend 移</small></div>'
+             : `<div><small>止盈1 平一半</small><b class="g">${fp(tp1)}</b><small>${rel(tp1)}</small></div>`}
     </div>
     <div class="line"><b class="${L ? 'g' : 'r'}">${SIDE[L ? 'long' : 'short']}</b> 買 <b>${fq(z.qty)}</b> ${coinOf(sym)} · ${spot ? '現貨' : (termName ? termName + ' · ' : '') + (z.mode === 'cross' ? '全倉' : '逐倉 ' + z.lev + ' 倍')}</div>
-    <div class="line"><span class="down">止損 −${fu(z.loss)} U</span> <small>(${(z.loss / S.total * 100).toFixed(1)}%)</small> · <span class="up">全止盈 +${fu(z.gain1 + z.gain2)} U</span></div>
+    <div class="line"><span class="down">止損 −${fu(z.loss)} U</span> <small>(${(z.loss / S.total * 100).toFixed(1)}%)</small> · ${noTP
+      ? `<span class="up">每多走 1 個止損距離 +${fu(z.loss)} U</span>` : `<span class="up">全止盈 +${fu(z.gain1 + z.gain2)} U</span>`}</div>
     ${tip ? msg(tip[0], tip[1]) : ''}${top ? msg(top[0], top[1]) : ''}
     <details class="more" data-k="${k}"><summary>詳細${rest.length ? `(還有 ${rest.length} 則提醒)` : ''}</summary>
       ${extra}
@@ -750,13 +799,23 @@ function cardHTML(P, i){
     <details class="more" data-k="c${t.key}"><summary>判斷依據</summary>${facts}${P.warns.map(w => msg(w[0], w[1])).join('')}</details></div>`;
   const warns = [...P.warns];
   if(bt && bt.n >= 30 && bt.exp < -0.02) warns.unshift(['bad', `回測:這個期別過去賠錢(每單 ${bt.exp.toFixed(2)}R),亮燈也要三思。`]);
-  const tip = P.status === 'go' ? ['ok', '到進場區了。下單前先過「5 問」。']
-            : P.status === 'wait' ? ['warn', `還沒到:掛限價 ${fp(P.entry)} 等,或開 🔔 等我叫你。`]
-            : ['bad', P.why || '不做'];
+  const L = P.dir === 'long', brk = P.strat === 'breakout';
+  const tip = brk
+    ? (P.status === 'go' ? ['ok', '剛突破:可以市價進場。止損掛好,不掛止盈。']
+      : P.status === 'wait' ? ['warn', `等 ${TF_NAME[t.tf]} 收盤${L ? '站上' : '跌破'} ${fp(P.trigger)}。開 🔔 等我叫你。`]
+      : ['bad', P.why || '不做'])
+    : (P.status === 'go' ? ['ok', '到進場區了。下單前先過「5 問」。']
+      : P.status === 'wait' ? ['warn', `還沒到:掛限價 ${fp(P.entry)} 等,或開 🔔 等我叫你。`]
+      : ['bad', P.why || '不做']);
+  const detailRows = brk
+    ? [['依據', esc(P.basis)],
+       ['移動止損', `現在 ${fp(P.m.st)} <small>(每根 ${TF_NAME[t.tf]} 收盤,把止損移到這條線;只往有利方向移)</small>`],
+       ['出場', `碰到移動止損,或 ${TF_NAME[t.tf]} SuperTrend 翻${L ? '空' : '多'}`],
+       ['幣安追蹤委託', `回調幅度約 ${(3 * P.m.atr / P.price * 100).toFixed(1)}% <small>(幣安不給設這麼大,就用手動移)</small>`]]
+    : [['依據', esc(P.basis)], ['移動止損', `${fp(P.m.st)} <small>(SuperTrend 線,進場後可跟著移)</small>`]];
   return `<div class="card term">${head}` + planView({
-    k: 'c' + t.key, L: P.dir === 'long', sym: P.sym, E: P.entry, p: P.price, stop: P.stop, tp1: P.tp1, tp2: P.tp2, z: P, spot: false,
-    tip, warns, extra: facts,
-    detailRows: [['依據', esc(P.basis)], ['移動止損', `${fp(P.m.st)} <small>(SuperTrend 線,進場後可跟著移)</small>`]],
+    k: 'c' + t.key, L, sym: P.sym, E: P.entry, p: P.price, stop: P.stop, tp1: P.tp1, tp2: P.tp2, z: P, spot: false,
+    tip, warns, extra: facts, noTP: brk, detailRows,
     actions: `<div class="row" style="margin-top:10px"><button onclick="drawPlan(${i})">畫到圖上</button><button onclick="planToForm(${i})">記這一單</button></div>`,
   }) + '</div>';
 }
@@ -776,7 +835,8 @@ function planToForm(i){
   const P = st.plans[S.sym][i];
   $('jMarket').value = 'futures';
   $('jSym').value = P.sym; $('jTerm').value = P.term.key; $('jSide').value = P.dir;
-  $('jEntry').value = fp(P.entry); $('jStop').value = fp(P.stop); $('jTp1').value = fp(P.tp1); $('jTp2').value = fp(P.tp2);
+  $('jEntry').value = fp(P.entry); $('jStop').value = fp(P.stop);
+  $('jTp1').value = P.noTP ? '' : fp(P.tp1); $('jTp2').value = P.noTP ? '' : fp(P.tp2);   // 突破策略不掛止盈
   $('jQty').value = +P.qty.toPrecision(6); $('jLev').value = P.lev;
   $('jMode').value = 'isolated'; $('jMargin').value = fu(P.margin); $('jLiq').value = fp(P.liq);
   $('jRules').checked = rules.every(r => r.checked);
@@ -800,7 +860,16 @@ cst.mode = 'isolated';
 $('cMode').onclick = e => { const v = e.target.dataset.v; if(!v) return; cst.mode = v; renderSeg(); calcCustom(); };
 $('cMargin').oninput = calcCustom;
 // 計畫方向:跟趨勢 / 只看做多 / 只看做空
-function renderDirMode(){ document.querySelectorAll('#dirMode button').forEach(b => b.classList.toggle('on', b.dataset.v === S.dirMode)); }
+function renderDirMode(){
+  document.querySelectorAll('#dirMode button').forEach(b => b.classList.toggle('on', b.dataset.v === S.dirMode));
+  document.querySelectorAll('#stratMode button').forEach(b => b.classList.toggle('on', b.dataset.v === S.strategy));
+}
+// 策略:突破順勢 / 回踩進場(計畫卡、提醒、回測一起換)
+$('stratMode').onclick = e => {
+  const v = e.target.dataset.v; if(!v || v === S.strategy) return;
+  S.strategy = v; saveDB(); renderDirMode(); renderBtParams(); refreshAllPlans();
+  toast(v === 'breakout' ? '改用「突破順勢」:突破才進場,不掛止盈,用移動止損讓利潤跑。' : '改用「回踩進場」:等回到支撐或均線才進場,固定止盈。');
+};
 $('dirMode').onclick = e => {
   const v = e.target.dataset.v; if(!v) return;
   S.dirMode = v; saveDB(); renderDirMode(); buildPlans(S.sym); renderCards(); if(chart) loadChart();
@@ -900,7 +969,7 @@ function renderWatch(){
       const cells = Array.isArray(ps) ? ps.map(P => `<td>${cell(P)}</td>`).join('')
         : `<td colspan="3" class="sub">${ps && ps.error ? esc(ps.error).slice(0, 30) : '讀取中…'}</td>`;
       return `<tr data-sym="${sym}" class="${sym === S.sym ? 'sel' : ''}"><td><b>${coinOf(sym)}</b></td><td>${fp(st.price[sym])}</td>${cells}<td><button class="x" data-del="${sym}" title="移除">×</button></td></tr>`;
-    }).join('') + '</table><div class="sub" style="margin-top:4px">● 可進場 · ▲▼ 等回踩 · — 不做 · 點一列看圖</div>';
+    }).join('') + `</table><div class="sub" style="margin-top:4px">● 可進場 · ▲▼ ${S.strategy === 'breakout' ? '等突破' : '等回踩'} · — 不做 · 點一列看圖</div>`;
 }
 $('watch').onclick = e => {
   const del = e.target.dataset.del;
@@ -1146,7 +1215,8 @@ function renderOpen(){
     const p = st.price[t.sym], s = t.side === 'long' ? 1 : -1;
     const pnl = isFinite(p) ? s * (p - t.entry) * t.qty : NaN, r = pnl / t.riskU;
     const R = Math.abs(t.entry - t.stop);
-    let tip = msg('ok', '照計畫抱著。別手動把止損拉遠。');
+    const noTP = !t.tp1 && !t.tp2;   // 沒掛止盈 = 用移動止損讓利潤跑
+    let tip = msg('ok', noTP ? '沒掛止盈:每根 K 收盤把止損移到 SuperTrend 線,翻轉就出場。' : '照計畫抱著。別手動把止損拉遠。');
     if(isFinite(p)){
       if(t.tp2 && s * (p - t.tp2) >= 0){ tip = msg('ok', '到止盈2了 → 全部平倉,落袋。'); hitOnce(t, 'tp2', '到止盈2,全部平倉'); }
       else if(t.tp1 && s * (p - t.tp1) >= 0){ tip = msg('ok', '到止盈1了 → 先平一半,止損移到進場價(保本),剩下讓它跑。'); hitOnce(t, 'tp1', '到止盈1,先平一半+止損移保本'); }
@@ -1159,7 +1229,7 @@ function renderOpen(){
     if(a && isFinite(p)){
       const L = t.side === 'long';
       if(L ? !a.stUp : a.stUp) trail = msg('warn', `${TF_NAME[term.tf]} SuperTrend 翻${a.stUp ? '多' : '空'}了 → 趨勢可能反轉,考慮提早出場。`);
-      else if(S.params.trail && (L ? (a.st > t.stop && a.st < p) : (a.st < t.stop && a.st > p)))
+      else if((S.params.trail || noTP) && (L ? (a.st > t.stop && a.st < p) : (a.st < t.stop && a.st > p)))
         trail = msg('ok', `止損可以${L ? '上' : '下'}移到 SuperTrend 線 ${fp(a.st)}(少虧或鎖住利潤)。 <button onclick="moveStop('${t.id}', ${a.st})">已在幣安改好</button>`);
     }
     tip += trail;
@@ -1460,8 +1530,48 @@ async function btData(sym, termKey){
   return {T, M, H, RG: regimeSeries(B)};
 }
 
-const paramTxt = P => `ADX ≥ ${P.adx} · SuperTrend 因子 ${P.stK} · 大盤濾網${P.regime ? '開' : '關'} · SuperTrend 移動止損${P.trail ? '開' : '關'}`;
-const paramKey = P => [P.adx, P.stK, +P.regime, +P.trail].join('/');
+const paramTxt = P => S.strategy === 'breakout'
+  ? `突破順勢 · 前 ${P.bN || 20} 根 · SuperTrend 因子 ${P.stK} · 大盤濾網${P.regime ? '開' : '關'}`
+  : `回踩進場 · ADX ≥ ${P.adx} · SuperTrend 因子 ${P.stK} · 大盤濾網${P.regime ? '開' : '關'} · 移動止損${P.trail ? '開' : '關'}`;
+const paramKey = P => S.strategy === 'breakout' ? ['B', P.bN || 20, P.stK, +P.regime].join('/') : [P.adx, P.stK, +P.regime, +P.trail].join('/');
+const runStrat = (M, H, P, RG) => S.strategy === 'breakout' ? simBreak(M, H, P, RG) : simulate(M, H, P, RG);
+
+// 突破順勢的回測:收盤突破前 N 根高(低)點 + 大週期 SuperTrend 同向 → 下一根開盤進場
+// 止損 2 ATR;之後每根把止損移到 SuperTrend 線,翻轉就出場;不設止盈
+function simBreak(M, H, P, RG){
+  const N = P.bN || 20, atr = atrSeries(M, 14), stM = superTrend(M, 10, P.stK), stH = superTrend(H, 10, P.stK);
+  const trades = [];
+  let j = -1, k = -1, pos = null;
+  const close = (b, x) => {
+    const L = pos.L;
+    trades.push({t0: pos.t0, t1: b.T, L, fill: pos.e, exit: x, r: ((L ? x - pos.e : pos.e - x) - pos.e * FEE) / (pos.R0 + pos.e * FEE)});
+    pos = null;
+  };
+  for(let i = N + 5; i < M.length; i++){
+    const b = M[i];
+    while(j + 1 < H.length && H[j + 1].T <= b.T) j++;
+    if(pos){
+      const L = pos.L;
+      if(L ? b.l <= pos.stop : b.h >= pos.stop){ close(b, pos.stop); continue; }
+      if(stM.up[i] !== L){ close(b, b.c); continue; }
+      if(stM.line[i] != null && (L ? stM.line[i] > pos.stop : stM.line[i] < pos.stop)) pos.stop = stM.line[i];
+      continue;
+    }
+    if(j < 0 || stH.up[j] == null || atr[i] == null || i + 1 >= M.length) continue;
+    let hi = -Infinity, lo = Infinity;
+    for(let q = i - N; q < i; q++){ hi = Math.max(hi, M[q].h); lo = Math.min(lo, M[q].l); }
+    const L = b.c > hi && stH.up[j] ? true : b.c < lo && !stH.up[j] ? false : null;
+    if(L === null) continue;
+    if(P.regime && RG){
+      while(k + 1 < RG.T.length && RG.T[k + 1] <= b.T) k++;
+      const r = k >= 0 ? RG.st[k] : 'mid';
+      if((r === 'bear' && L) || (r === 'bull' && !L)) continue;
+    }
+    const e = M[i + 1].o, stop = L ? e - 2 * atr[i] : e + 2 * atr[i];
+    pos = {L, e, stop, R0: Math.abs(e - stop), t0: M[i + 1].t};
+  }
+  return trades;
+}
 // 把回測結果記下來,計畫卡上會顯示「這個幣這個期別,過去賺不賺」
 function saveBt(sym, term, s){
   db.bt = db.bt || {};
@@ -1509,7 +1619,7 @@ $('btRun').onclick = async () => {
   btLock(true, `抓 ${coinOf(sym)} 的歷史 K 線中…(第一次比較久)`);
   try{
     const {T, M, H, RG} = await btData(sym, term);
-    const trades = simulate(M, H, S.params, RG), s = btStats(trades);
+    const trades = runStrat(M, H, S.params, RG), s = btStats(trades);
     saveBt(sym, term, s);
     const from = new Date(M[60].t).toLocaleDateString(), to = new Date(M.at(-1).T).toLocaleDateString();
     $('btOut').innerHTML = `<div class="sub" style="margin:8px 0">${coinOf(sym)} ${T.name}(${TF_NAME[T.tf]}+${TF_NAME[T.htf]})· ${from} ~ ${to} · ${paramTxt(S.params)}</div>`
@@ -1539,26 +1649,37 @@ function drawEquity(trades){
   btChart.timeScale().fitContent();
 }
 
-// 比較參數:同一個幣、同一段時間,換 24 組參數各跑一次
+// 比較參數:同一個幣、同一段時間,換好幾組參數各跑一次(回踩 24 組、突破 8 組)
 $('btGrid').onclick = async () => {
   if(btBusy) return;
-  const sym = normSym($('btSym').value) || S.sym, term = $('btTerm').value;
+  const sym = normSym($('btSym').value) || S.sym, term = $('btTerm').value, brk = S.strategy === 'breakout';
   $('btSym').value = sym;
-  btLock(true, `抓資料、跑 24 組參數中…`);
+  btLock(true, `抓資料、跑參數中…`);
   try{
     const {T, M, H, RG} = await btData(sym, term), rows = [];
-    for(const adx of [15, 20, 25]) for(const stK of [3, 4]) for(const regime of [false, true]) for(const trail of [false, true]){
-      const P = {adx, stK, regime, trail};
-      rows.push({P, s: btStats(simulate(M, H, P, RG))});
+    if(brk){
+      for(const bN of [20, 55]) for(const stK of [3, 4]) for(const regime of [false, true]){
+        const P = {...S.params, bN, stK, regime};
+        rows.push({P, s: btStats(simBreak(M, H, P, RG))});
+      }
+    }else{
+      for(const adx of [15, 20, 25]) for(const stK of [3, 4]) for(const regime of [false, true]) for(const trail of [false, true]){
+        const P = {...S.params, adx, stK, regime, trail};
+        rows.push({P, s: btStats(simulate(M, H, P, RG))});
+      }
     }
     rows.sort((a, b) => b.s.tot - a.s.tot);
-    const same = P => ['adx', 'stK', 'regime', 'trail'].every(k => P[k] === S.params[k]);
+    const keys = brk ? ['bN', 'stK', 'regime'] : ['adx', 'stK', 'regime', 'trail'];
+    const same = P => keys.every(k => P[k] === S.params[k]);
     const best = rows.find(r => r.s.n >= 30);
-    $('btOut').innerHTML = `<div class="sub" style="margin-top:8px">${coinOf(sym)} ${T.name}:24 組參數,依「總共賺幾 R」排序。</div>`
+    $('btOut').innerHTML = `<div class="sub" style="margin-top:8px">${coinOf(sym)} ${T.name}:${rows.length} 組參數,依「總共賺幾 R」排序。</div>`
       + (best ? msg(best.s.exp > 0 ? 'ok' : 'bad', `樣本夠(≥30 單)的最好一組:${paramTxt(best.P)} → 平均每單 ${best.s.exp.toFixed(2)}R`) : msg('warn', '每一組都不到 30 單,樣本太少,先別換參數。'))
       + msg('warn', '小心「挑到剛好適合過去的參數」:換一個幣或期別也要好,才算真的好。');
-    $('btGridOut').innerHTML = `<div style="overflow:auto;margin-top:8px"><table class="tbl"><tr><th>ADX</th><th>因子</th><th>大盤濾網</th><th>移動止損</th><th>單數</th><th>勝率</th><th>平均</th><th>總共</th><th>最大回撤</th><th></th></tr>`
-      + rows.map(({P, s}) => `<tr style="${same(P) ? 'background:#221d33' : ''}"><td>${P.adx}</td><td>${P.stK}</td><td>${P.regime ? '開' : '關'}</td><td>${P.trail ? '開' : '關'}</td>
+    const head = brk ? '<th>前幾根</th><th>因子</th><th>大盤濾網</th>' : '<th>ADX</th><th>因子</th><th>大盤濾網</th><th>移動止損</th>';
+    const cells = P => brk ? `<td>${P.bN}</td><td>${P.stK}</td><td>${P.regime ? '開' : '關'}</td>`
+                           : `<td>${P.adx}</td><td>${P.stK}</td><td>${P.regime ? '開' : '關'}</td><td>${P.trail ? '開' : '關'}</td>`;
+    $('btGridOut').innerHTML = `<div style="overflow:auto;margin-top:8px"><table class="tbl"><tr>${head}<th>單數</th><th>勝率</th><th>平均</th><th>總共</th><th>最大回撤</th><th></th></tr>`
+      + rows.map(({P, s}) => `<tr style="${same(P) ? 'background:#221d33' : ''}">${cells(P)}
           <td>${s.n}${s.n < 30 ? ' <small class="y">少</small>' : ''}</td><td>${(s.win * 100).toFixed(0)}%</td>
           <td class="${s.exp >= 0 ? 'up' : 'down'}">${s.exp.toFixed(2)}R</td><td class="${s.tot >= 0 ? 'up' : 'down'}">${s.tot.toFixed(1)}R</td><td>-${s.dd.toFixed(1)}R</td>
           <td>${same(P) ? '<small>使用中</small>' : `<button onclick='applyParams(${JSON.stringify(P)})'>套用</button>`}</td></tr>`).join('')
@@ -1568,7 +1689,7 @@ $('btGrid').onclick = async () => {
   btLock(false);
 };
 function applyParams(P){
-  S.params = {...P}; saveDB(); renderBtParams();
+  S.params = {...S.params, ...P}; saveDB(); renderBtParams();
   tick().then(() => { if(chart) loadChart(); });   // 規則換了,全部重新判斷
   toast(`已套用:${paramTxt(P)}。計畫卡、提醒都改用這組。`);
 }
@@ -1582,7 +1703,7 @@ $('btAll').onclick = async () => {
   for(const sym of S.watch) for(const T of TERMS){
     $('btOut').innerHTML = `<div class="sub" style="margin-top:8px">回測中:${coinOf(sym)} ${T.name}…(${rows.length + 1}/${S.watch.length * 3})</div>`;
     try{
-      const {M, H, RG} = await btData(sym, T.key), s = btStats(simulate(M, H, S.params, RG));
+      const {M, H, RG} = await btData(sym, T.key), s = btStats(runStrat(M, H, S.params, RG));
       rows.push({sym, T, s}); saveBt(sym, T.key, s);
     }
     catch(e){ rows.push({sym, T, err: e.message}); }
