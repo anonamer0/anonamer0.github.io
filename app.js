@@ -65,7 +65,7 @@ const lsSet = (k, v) => { try{ localStorage.setItem(k, v); }catch(e){} };
    ========================================================= */
 const DEF = {total: 890, risk: 2, alloc: {short: 25, mid: 25, long: 25, reserve: 25},
              watch: ['SOLUSDT', '1000PEPEUSDT', 'DOGEUSDT'], sym: 'SOLUSDT', tf: '4h', alertOn: false,
-             show: {lv: true, ema: true, bb: true, st: true}, spot: {budget: 130, plans: []},
+             show: {lv: true, ema: true, bb: true, st: true}, spot: {budget: 130, plans: [], targets: [], lastRebal: 0},
              params: {adx: 20, stK: 3, regime: false, trail: true},    // 判斷參數(回測室可以換)
              ntfy: {topic: '', on: false}};                            // 手機推播
 let db = {settings: {}, trades: [], spot: []}, S;
@@ -313,15 +313,17 @@ const st = {ana: {}, plans: {}, price: {}, chg: {}, senti: null, news: [], ai: n
 
 // 進場點、止損、止盈的核心規則(即時計畫和回測室共用,保證兩邊一模一樣)
 // m 需要:e20、atr、lv{sup,res};p = 現價
-function planCore(L, p, m){
+// withTrend = false:逆勢或沒趨勢時(自訂一單用),不看 20 均線,只找支撐/壓力
+function planCore(L, p, m, withTrend = true){
   const s = L ? 1 : -1, a = m.atr;
   // 進場:優先找「以前的支撐(做空找壓力)」,和 20 均線重疊最好
-  const near = (L ? m.lv.sup : m.lv.res).find(x => Math.abs(p - x.p) <= 2.5 * a);
+  const near = (L ? m.lv.sup : m.lv.res).find(x => Math.abs(p - x.p) <= (withTrend ? 2.5 : 3) * a);
   let entry, basis;
-  if(L ? p < m.e20 : p > m.e20){ entry = p; basis = '價格已回到 20 均線內側(回踩中)'; }
-  else if(near && Math.abs(near.p - m.e20) <= 0.7 * a){ entry = (near.p + m.e20) / 2; basis = `20均線 + ${L ? '支撐' : '壓力'} ${fp(near.p)} 重疊(碰過 ${near.touch} 次)`; }
+  if(withTrend && (L ? p < m.e20 : p > m.e20)){ entry = p; basis = '價格已回到 20 均線內側(回踩中)'; }
+  else if(withTrend && near && Math.abs(near.p - m.e20) <= 0.7 * a){ entry = (near.p + m.e20) / 2; basis = `20均線 + ${L ? '支撐' : '壓力'} ${fp(near.p)} 重疊(碰過 ${near.touch} 次)`; }
   else if(near){ entry = near.p + s * 0.2 * a; basis = `以前的${L ? '支撐' : '壓力'} ${fp(near.p)}(碰過 ${near.touch} 次)`; }
-  else { entry = m.e20; basis = '20 均線'; }
+  else if(withTrend){ entry = m.e20; basis = '20 均線'; }
+  else { entry = p; basis = `現價(附近沒有${L ? '支撐' : '壓力'})`; }
   if(L ? entry > p : entry < p) entry = p;   // 不追價
   // 止損 1.5 倍 ATR 外(避開正常晃動);止盈1 = 1.5R 平一半,止盈2 = 下一個壓力(支撐)或 3R
   const stop = entry - s * 1.5 * a, R = Math.abs(entry - stop);
@@ -330,6 +332,30 @@ function planCore(L, p, m){
   const tp2 = far ? far.p - s * 0.1 * a : entry + s * 3 * R;
   const block = (L ? m.lv.res : m.lv.sup).find(x => L ? (x.p > entry && x.p < tp1) : (x.p < entry && x.p > tp1));
   return {entry, basis, stop, R, tp1, tp2, block};
+}
+
+// 算「買多少」:打到止損剛好虧 總資金×風險%。合約會自動挑最低、又安全的槓桿;現貨不用槓桿
+const SPOT_FEE = 0.002;   // 現貨買+賣手續費 ≈ 0.1% × 2
+function sizePlan({L, entry, stop, tp1, tp2, cap, spot, name}){
+  const warns = [], R = Math.abs(entry - stop), dist = R / entry, fee = spot ? SPOT_FEE : FEE;
+  const riskU = S.total * effRisk() / 100;
+  let notional = riskU / (dist + fee), lev = 1;
+  if(!(cap > 0)){ notional = 0; warns.push(['bad', `${name}可用的錢是 0,這份不做。`]); }
+  else if(spot){
+    if(notional > cap){ notional = cap; warns.push(['warn', `現貨可用只有 ${fu(cap)} U,已縮小(打到止損只虧 ${fu(notional * (dist + fee))} U)。`]); }
+  }else{
+    const maxLev = Math.max(1, Math.floor(1 / (1.5 * dist + MMR)));   // 爆倉價要比止損遠 1.5 倍
+    lev = Math.max(1, Math.ceil(notional / cap));
+    if(lev > maxLev){ lev = maxLev; notional = cap * maxLev; warns.push(['warn', `這份資金不夠大,已自動縮小倉位(實際只虧 ${fu(notional * (dist + fee))} U)。`]); }
+  }
+  const qty = notional / entry;
+  return {R, lev, notional, qty, cap, warns, spot: !!spot,
+    margin: notional / lev,
+    loss: notional * (dist + fee),
+    gain1: qty / 2 * Math.abs(tp1 - entry) - notional / 2 * fee,
+    gain2: qty / 2 * Math.abs(tp2 - entry) - notional / 2 * fee,
+    liq: spot ? NaN : L ? entry * (1 - 1 / lev + MMR) : entry * (1 + 1 / lev - MMR),
+    rr2: Math.abs(tp2 - entry) / R};
 }
 
 function makePlan(t, m, h, sym){
@@ -358,25 +384,10 @@ function makePlan(t, m, h, sym){
   const {entry, basis, stop, R, tp1, tp2, block} = planCore(L, p, m);
 
   // 3) 買多少:打到止損剛好虧「總資金 × 風險%」(熊市自動砍半);保證金不超過這一份錢
-  const cap = S.total * S.alloc[t.key] / 100;
-  const riskU = S.total * effRisk() / 100;
+  const {warns: zw, ...z} = sizePlan({L, entry, stop, tp1, tp2, cap: S.total * S.alloc[t.key] / 100, spot: false, name: t.name});
+  Object.assign(P, {entry, basis, stop, tp1, tp2, ...z});
+  P.warns.push(...zw);
   const dist = R / entry;
-  let notional = riskU / (dist + FEE);
-  const maxLev = Math.max(1, Math.floor(1 / (1.5 * dist + MMR)));   // 爆倉價要比止損遠 1.5 倍
-  let lev = Math.max(1, Math.ceil(notional / cap));
-  if(!(cap > 0)){ lev = 1; notional = 0; P.warns.push(['bad', `${t.name}分配 0%,這份不做。`]); }
-  else if(lev > maxLev){
-    lev = maxLev; notional = cap * maxLev;
-    P.warns.push(['warn', `這份資金不夠大,已自動縮小倉位(實際只虧 ${fu(notional * (dist + FEE))} U)。`]);
-  }
-  const qty = notional / entry;
-  Object.assign(P, {entry, basis, stop, tp1, tp2, R, lev, notional, qty, cap,
-    margin: notional / lev,
-    loss: notional * (dist + FEE),
-    gain1: qty / 2 * Math.abs(tp1 - entry) - notional / 2 * FEE,
-    gain2: qty / 2 * Math.abs(tp2 - entry) - notional / 2 * FEE,
-    liq: L ? entry * (1 - 1 / lev + MMR) : entry * (1 + 1 / lev - MMR),
-    rr2: Math.abs(tp2 - entry) / R});
 
   // 4) 提醒
   if(against) P.warns.push(['bad', `逆大盤:現在是${REGIME[rg][0]},你在${SIDE[m.dir]}。勝率通常比較低。`]);
@@ -510,9 +521,10 @@ function drawLevels(bars){
   }
 
   // 對應期別的計畫線(進場/止損/止盈)
-  const P = (st.plans[S.sym] || []).find?.(x => x.term.tf === S.tf && x.dir !== 'none');
+  const C = st.showCustom && st.custom && st.custom.sym === S.sym ? st.custom : null;   // 自訂一單優先
+  const P = C || (st.plans[S.sym] || []).find?.(x => x.term.tf === S.tf && x.dir !== 'none');
   if(P){
-    add(P.entry, '#60a5fa', `${P.term.name}進場`, D.Solid, 2);
+    add(P.entry, '#60a5fa', C ? `自訂${C.L ? '做多' : '做空'}進場` : `${P.term.name}進場`, D.Solid, 2);
     add(P.stop, '#ef4444', '止損', D.Solid, 2);
     add(P.tp1, '#22c55e', '止盈1', D.Solid, 2);
     add(P.tp2, '#22c55e', '止盈2', D.Solid, 2);
@@ -648,7 +660,8 @@ function cardHTML(P, i){
   const bt = btNote(P.sym, t.key);
   const btLine = !bt ? '<div class="votes">回測:還沒跑(到回測室按「跑整個監控清單」)</div>'
     : `<div class="votes">回測(${bt.n} 單):勝率 ${(bt.win * 100).toFixed(0)}%、平均每單 <b class="${bt.exp >= 0 ? 'g' : 'r'}">${bt.exp >= 0 ? '+' : ''}${bt.exp.toFixed(2)}R</b>${bt.n < 30 ? '(樣本少)' : Math.abs(bt.exp) <= 0.02 ? '(≈ 打平,扣掉資金費率就是賠)' : bt.exp < 0 ? ' ← 過去是賠錢的' : ''}</div>`;
-  const head = `<div class="th"><span class="dot ${dot}"></span><b>${t.name}</b><span class="sub">${TF_NAME[t.tf]}+${TF_NAME[t.htf]} · 抱${t.hold}</span>${badge(P)}</div>` + votesHTML(P) + btLine;
+  const head = `<div class="th"><span class="dot ${dot}"></span><b>${t.name}</b><span class="sub">${TF_NAME[t.tf]}+${TF_NAME[t.htf]} · 抱${t.hold}</span>${badge(P)}</div>` + votesHTML(P) + btLine
+    + (t.key === 'long' ? '<div class="votes">這張是合約(有槓桿)。真的要長期抱,請用下面的「現貨・長期持有」。</div>' : '');
   if(P.dir !== 'none' && bt && bt.n >= 30 && bt.exp < -0.02) P.warns = [['bad', `回測顯示這個幣的${t.name},這套規則過去是賠錢的(每單 ${bt.exp.toFixed(2)}R)。亮燈也要三思。`], ...P.warns.filter(w => !w[1].startsWith('回測顯示'))];
   if(P.dir === 'none') return `<div class="card term">${head}<div class="sub" style="margin:8px 0">${esc(P.why)}</div>${msg('warn', '不做。沒機會就等,天天開單是在幫平台刷手續費。')}${P.warns.map(w => msg(w[0], w[1])).join('')}</div>`;
   const E = P.entry, p = P.price, T = S.total, L = P.dir === 'long', rel = x => `<small>(${pc((x - E) / E)})</small>`;
@@ -686,12 +699,102 @@ function votesHTML(P){
   const big = h.dir === 'long' ? c('g', '多') : h.dir === 'short' ? c('r', '空') : c('y', '沒方向');
   return `<div class="votes">${TF_NAME[P.term.tf]}:${ema} · ${stv} · ${adx} · ${bb}${m.bb.squeeze ? ' · ' + c('y', '布林收窄') : ''}<br>${TF_NAME[P.term.htf]}(大方向):${big}</div>`;
 }
-function drawPlan(i){ const P = st.plans[S.sym][i]; S.tf = P.term.tf; saveDB(); openWS(); loadChart(); $('chart').scrollIntoView({behavior: 'smooth'}); }
+function drawPlan(i){ const P = st.plans[S.sym][i]; st.showCustom = false; S.tf = P.term.tf; saveDB(); openWS(); loadChart(); $('chart').scrollIntoView({behavior: 'smooth'}); }
 function planToForm(i){
   const P = st.plans[S.sym][i];
+  $('jMarket').value = 'futures';
   $('jSym').value = P.sym; $('jTerm').value = P.term.key; $('jSide').value = P.dir;
   $('jEntry').value = fp(P.entry); $('jStop').value = fp(P.stop); $('jTp1').value = fp(P.tp1); $('jTp2').value = fp(P.tp2);
   $('jQty').value = +P.qty.toPrecision(6); $('jLev').value = P.lev;
+  $('jRules').checked = rules.every(r => r.checked);
+  $('addBox').open = true; $('journal').scrollIntoView({behavior: 'smooth'});
+  toast('已帶入。實際成交價不同的話改一下再儲存。');
+}
+
+/* ---------- 自訂一單:合約/現貨、做多/做空自己選 ---------- */
+const cst = {market: 'futures', side: 'long'};
+function renderSeg(){
+  document.querySelectorAll('#cMarket button').forEach(b => b.classList.toggle('on', b.dataset.v === cst.market));
+  document.querySelectorAll('#cSide button').forEach(b => {
+    b.classList.toggle('on', b.dataset.v === cst.side);
+    b.disabled = cst.market === 'spot' && b.dataset.v === 'short';
+  });
+  $('cTerm').hidden = cst.market === 'spot';
+}
+$('cMarket').onclick = e => {
+  const v = e.target.dataset.v; if(!v) return;
+  cst.market = v; if(v === 'spot') cst.side = 'long';
+  renderSeg(); calcCustom();
+};
+$('cSide').onclick = e => {
+  const v = e.target.dataset.v; if(!v) return;
+  if(v === 'short' && cst.market === 'spot') return toast('現貨不能做空。想做空請切到「合約」。', 'bad');
+  cst.side = v; renderSeg(); calcCustom();
+};
+const cTermNow = () => TERMS.find(x => x.key === (cst.market === 'spot' ? 'long' : $('cTerm').value));
+$('cAuto').onclick = () => {
+  const T = cTermNow(), m = st.ana[S.sym] && st.ana[S.sym][T.tf];
+  if(!m) return toast('行情還在讀,等一下再按。', 'bad');
+  const L = cst.side === 'long', p = st.price[S.sym] || m.price;
+  const c = planCore(L, p, m, m.dir === cst.side);   // 順勢用趨勢規則;逆勢/沒趨勢只找支撐壓力
+  $('cEntry').value = fp(c.entry); $('cStop').value = fp(c.stop); $('cTp1').value = fp(c.tp1); $('cTp2').value = fp(c.tp2);
+  st.cBasis = c.basis;
+  calcCustom();
+};
+['cEntry', 'cStop', 'cTp1', 'cTp2'].forEach(id => $(id).oninput = () => { st.cBasis = null; calcCustom(); });
+$('cTerm').onchange = calcCustom;
+
+function calcCustom(){
+  const out = $('cOut'), E = +$('cEntry').value, SL = +$('cStop').value;
+  const L = cst.side === 'long', spot = cst.market === 'spot', T = cTermNow(), s = L ? 1 : -1;
+  st.custom = null;
+  if(!E || !SL){ out.innerHTML = '<div class="sub" style="margin-top:8px">填進場價和止損價,或按「自動帶入」。</div>'; return; }
+  if(L ? SL >= E : SL <= E){ out.innerHTML = msg('bad', L ? '做多:止損要「低於」進場價。' : '做空:止損要「高於」進場價。'); return; }
+  const R = Math.abs(E - SL), tp1 = +$('cTp1').value || E + s * 1.5 * R, tp2 = +$('cTp2').value || E + s * 3 * R;
+  if(L ? (tp1 <= E || tp2 <= E) : (tp1 >= E || tp2 >= E)){ out.innerHTML = msg('bad', '止盈方向反了:做多止盈在上面、做空止盈在下面。'); return; }
+  const cap = spot ? S.spot.budget : S.total * S.alloc[T.key] / 100;
+  const z = sizePlan({L, entry: E, stop: SL, tp1, tp2, cap, spot, name: spot ? '現貨' : T.name});
+  st.custom = {sym: S.sym, L, spot, term: T.key, entry: E, stop: SL, tp1, tp2, qty: z.qty, lev: z.lev};
+  // 和趨勢燈、大盤比一比
+  const w = [], m = st.ana[S.sym] && st.ana[S.sym][T.tf], rg = st.regime && st.regime.state;
+  if(m){
+    if(m.dir === 'none') w.push(['warn', `${TF_NAME[T.tf]}現在沒有明確趨勢(震盪)。規則說:沒機會就等。`]);
+    else if(m.dir !== cst.side) w.push(['bad', `逆勢:${TF_NAME[T.tf]}趨勢是${m.dir === 'long' ? '多' : '空'},你要${SIDE[cst.side]}。勝率通常比較低,倉位照規則算好了,別再加大。`]);
+    else w.push(['ok', `順勢:和${TF_NAME[T.tf]}趨勢同方向。`]);
+  }
+  if((rg === 'bear' && L) || (rg === 'bull' && !L)) w.push(['bad', `逆大盤:現在是${REGIME[rg][0]}。`]);
+  if(spot) w.push(['ok', '現貨沒有槓桿、不會爆倉。止損還是要設,別讓小虧變大套。']);
+  const bt = !spot && btNote(S.sym, T.key);
+  if(bt && bt.n >= 30 && m && m.dir === cst.side) w.push([bt.exp >= 0 ? 'ok' : 'warn', `回測(順勢規則):這個期別過去平均每單 ${bt.exp >= 0 ? '+' : ''}${bt.exp.toFixed(2)}R。`]);
+  const rel = x => `<small>(${pc((x - E) / E)})</small>`, Tt = S.total;
+  const rows = [
+    ['市場/方向', `${spot ? '現貨' : '合約 · ' + T.name} <b class="${L ? 'g' : 'r'}">${SIDE[cst.side]}</b>`],
+    ['進場', `<b>${fp(E)}</b> <small>(現價${pc((E - (st.price[S.sym] || E)) / (st.price[S.sym] || E))})</small>${st.cBasis ? `<br><small>依據:${esc(st.cBasis)}</small>` : ''}`],
+    ['止損', `${fp(SL)} ${rel(SL)}`],
+    ['止盈1 平一半', `${fp(tp1)} ${rel(tp1)} <span class="up">+${fu(z.gain1)} U</span>`],
+    ['止盈2 全平', `${fp(tp2)} ${rel(tp2)} <span class="up">+${fu(z.gain2)} U</span>`],
+    ['買多少', `<b>${fq(z.qty)}</b> ${coinOf(S.sym)} <small>(${spot ? '花' : '倉位'} ${fu(z.notional)} U)</small>`],
+    spot ? ['用掉現貨', `${fu(z.notional)} U <small>(現貨可用 ${fu(cap)} U 的 ${cap ? (z.notional / cap * 100).toFixed(0) : 0}%)</small>`]
+         : ['槓桿/保證金', `${z.lev} 倍 / ${fu(z.margin)} U <small>(這份 ${fu(cap)} U 的 ${cap ? (z.margin / cap * 100).toFixed(0) : 0}%)</small>`],
+    ['打到止損', `<span class="down">-${fu(z.loss)} U</span> <small>(總資金 -${(z.loss / Tt * 100).toFixed(2)}%)</small>`],
+    ['全部止盈', `<span class="up">+${fu(z.gain1 + z.gain2)} U</span> <small>(總資金 +${((z.gain1 + z.gain2) / Tt * 100).toFixed(2)}%)</small>`],
+    ['賺賠比', `止盈1 1:${(Math.abs(tp1 - E) / R).toFixed(1)}|止盈2 1:${z.rr2.toFixed(1)}`],
+  ];
+  if(!spot) rows.push(['約爆倉價', `${fp(z.liq)} ${rel(z.liq)}`]);
+  out.innerHTML = `<table class="plan">${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table>`
+    + [...w, ...z.warns].map(x => msg(x[0], x[1])).join('')
+    + `<div class="row" style="margin-top:10px"><button onclick="drawCustom()">畫到圖上</button><button onclick="customToForm()">記這一單</button></div>`;
+}
+function drawCustom(){
+  if(!st.custom) return;
+  st.showCustom = true; loadChart(); $('chart').scrollIntoView({behavior: 'smooth'});
+}
+function customToForm(){
+  const c = st.custom; if(!c) return;
+  $('jMarket').value = c.spot ? 'spot' : 'futures';
+  $('jSym').value = c.sym; $('jTerm').value = c.term; $('jSide').value = c.L ? 'long' : 'short';
+  $('jEntry').value = fp(c.entry); $('jStop').value = fp(c.stop); $('jTp1').value = fp(c.tp1); $('jTp2').value = fp(c.tp2);
+  $('jQty').value = +c.qty.toPrecision(6); $('jLev').value = c.lev;
   $('jRules').checked = rules.every(r => r.checked);
   $('addBox').open = true; $('journal').scrollIntoView({behavior: 'smooth'});
   toast('已帶入。實際成交價不同的話改一下再儲存。');
@@ -828,18 +931,22 @@ function showAI(v){
 /* =========================================================
    交易紀錄
    ========================================================= */
+const feeOf = t => t.market === 'spot' ? SPOT_FEE : FEE;
+const mktTag = t => t.market === 'spot' ? '<span class="tag">現貨</span>' : `<span class="tag">合約 ${t.lev}x</span>`;
 const openTrades = () => db.trades.filter(t => t.status === 'open');
 const closedTrades = () => db.trades.filter(t => t.status === 'closed').sort((a, b) => a.exitTime - b.exitTime);
 
 $('jSave').onclick = () => {
   const n = id => +$(id).value;
-  const t = {id: Date.now().toString(36), time: Date.now(), status: 'open',
+  const market = $('jMarket').value;
+  const t = {id: Date.now().toString(36), time: Date.now(), status: 'open', market,
     sym: normSym($('jSym').value), term: $('jTerm').value, side: $('jSide').value,
-    entry: n('jEntry'), stop: n('jStop'), tp1: n('jTp1'), tp2: n('jTp2'), qty: n('jQty'), lev: n('jLev') || 1,
+    entry: n('jEntry'), stop: n('jStop'), tp1: n('jTp1'), tp2: n('jTp2'), qty: n('jQty'), lev: market === 'spot' ? 1 : (n('jLev') || 1),
     reason: $('jReason').value.trim(), rules: $('jRules').checked};
   if(!t.sym || !t.entry || !t.stop || !t.qty) return toast('幣、進場價、止損價、數量一定要填。', 'bad');
+  if(market === 'spot' && t.side === 'short') return toast('現貨不能做空。', 'bad');
   if(t.side === 'long' ? t.stop >= t.entry : t.stop <= t.entry) return toast('止損方向反了。', 'bad');
-  t.riskU = t.qty * Math.abs(t.entry - t.stop) + t.qty * t.entry * FEE;
+  t.riskU = t.qty * Math.abs(t.entry - t.stop) + t.qty * t.entry * feeOf(t);
   db.trades.push(t); saveDB();
   ['jEntry', 'jStop', 'jTp1', 'jTp2', 'jQty', 'jReason'].forEach(id => $(id).value = '');
   $('addBox').open = false;
@@ -853,7 +960,7 @@ function closeTrade(id){
   if(!exit && given === '') return toast('填平倉價,或直接填幣安顯示的「已實現盈虧」。', 'bad');
   const s = t.side === 'long' ? 1 : -1;
   t.exit = exit || null;
-  t.pnl = given !== '' ? +given : s * (exit - t.entry) * t.qty - t.qty * (t.entry + exit) / 2 * FEE;
+  t.pnl = given !== '' ? +given : s * (exit - t.entry) * t.qty - t.qty * (t.entry + exit) / 2 * feeOf(t);
   t.r = t.pnl / t.riskU;
   t.note = $('nt-' + id).value.trim();
   t.exitTime = Date.now(); t.status = 'closed';
@@ -900,7 +1007,7 @@ function renderOpen(){
     }
     tip += trail;
     return `<div class="trade">
-      <div><b>${coinOf(t.sym)}</b> ${TERM_NAME[t.term]} <b class="${t.side === 'long' ? 'g' : 'r'}">${SIDE[t.side]}</b> ${t.lev}x · 進 ${fp(t.entry)} · 損 ${fp(t.stop)} · 盈 ${fp(t.tp1)} / ${fp(t.tp2)} · ${fq(t.qty)} 顆
+      <div><b>${coinOf(t.sym)}</b> ${mktTag(t)} ${TERM_NAME[t.term]} <b class="${t.side === 'long' ? 'g' : 'r'}">${SIDE[t.side]}</b> · 進 ${fp(t.entry)} · 損 ${fp(t.stop)} · 盈 ${fp(t.tp1)} / ${fp(t.tp2)} · ${fq(t.qty)} 顆
         <small>${new Date(t.time).toLocaleString()}</small></div>
       <div>現價 ${fp(p)} · 浮動 <b class="${pnl >= 0 ? 'up' : 'down'}">${isFinite(pnl) ? (pnl >= 0 ? '+' : '') + fu(pnl) + ' U' : '-'}</b>
         <small>(${isFinite(r) ? (r >= 0 ? '+' : '') + r.toFixed(2) + 'R' : '-'},總資金 ${isFinite(pnl) ? pc(pnl / S.total) : '-'})</small></div>
@@ -932,7 +1039,7 @@ function renderJournal(){
   const list = closedTrades().slice().reverse();
   $('closedList').innerHTML = !list.length ? '<div class="sub">還沒有結束的單。</div>' :
     `<div style="overflow:auto"><table class="tbl"><tr><th>日期</th><th>幣</th><th>期別</th><th>方向</th><th>進場</th><th>平倉</th><th>盈虧</th><th>R</th><th>守紀律</th><th>心得</th><th></th></tr>` +
-    list.map(t => `<tr><td>${new Date(t.exitTime).toLocaleDateString()}</td><td>${coinOf(t.sym)}</td><td>${TERM_NAME[t.term]}</td>
+    list.map(t => `<tr><td>${new Date(t.exitTime).toLocaleDateString()}</td><td>${coinOf(t.sym)} ${mktTag(t)}</td><td>${TERM_NAME[t.term]}</td>
       <td class="${t.side === 'long' ? 'g' : 'r'}">${SIDE[t.side]}</td><td>${fp(t.entry)}</td><td>${fp(t.exit)}</td>
       <td class="${t.pnl >= 0 ? 'up' : 'down'}">${t.pnl >= 0 ? '+' : ''}${fu(t.pnl)} U<br><small>${pc(t.pnl / S.total)}</small></td>
       <td>${t.r.toFixed(2)}</td><td>${t.rules ? '✓' : '<span class="r">✗</span>'}</td><td><small>${esc(t.note || '')}</small></td>
@@ -1373,7 +1480,7 @@ function dueInfo(p){
   return due ? {state: 'due', text: '該買了'} : {state: 'wait', text: `${p.freq === 'month' ? p.day + ' 號' : WEEKDAY[p.day]}再買`};
 }
 
-const spotSyms = () => [...new Set([...S.spot.plans.map(p => p.sym), ...db.spot.map(r => r.sym)])];
+const spotSyms = () => [...new Set([...S.spot.plans.map(p => p.sym), ...db.spot.map(r => r.sym), ...S.spot.targets.map(t => t.sym)])];
 const spotNotified = {};
 async function spotTick(){
   if(st.fng == null){ try{ st.fng = +(await (await fetch('https://api.alternative.me/fng/?limit=1')).json()).data[0].value; }catch(e){} }
@@ -1393,6 +1500,10 @@ async function spotTick(){
     }
   });
   renderSpot();
+  if(st.rebalDue && !spotNotified['r' + today]){
+    spotNotified['r' + today] = 1;
+    notify('長期持有:該再平衡了', '比例偏離目標超過 5 個百分點,打開「現貨」區看要買賣多少。', true);
+  }
 }
 
 function renderSpot(){
@@ -1424,29 +1535,86 @@ function renderSpot(){
   renderHold();
 }
 
-function renderHold(){
-  const by = {};
-  db.spot.forEach(r => (by[r.sym] = by[r.sym] || []).push(r));
-  const syms = Object.keys(by);
-  $('spotHold').innerHTML = !syms.length ? '<div class="sub">還沒有紀錄。</div>' :
-    `<div style="overflow:auto"><table class="tbl"><tr><th>幣</th><th>投入</th><th>數量</th><th>平均成本</th><th>現價</th><th>現值</th><th>盈虧</th><th>次數</th></tr>` +
-    syms.map(sym => {
-      const rs = by[sym], inv = sum(rs.map(r => r.usd)), q = sum(rs.map(r => r.qty)), a = st.spot[sym];
-      const px = a ? a.p : NaN, val = q * px, pnl = val - inv;
-      return `<tr><td><b>${coinOf(sym)}</b></td><td>${fu(inv)} U</td><td>${fq(q)}</td><td>${fp(inv / q)}</td><td>${fp(px)}</td>
-        <td>${isFinite(val) ? fu(val) + ' U' : '-'}</td>
-        <td class="${pnl >= 0 ? 'up' : 'down'}">${isFinite(pnl) ? (pnl >= 0 ? '+' : '') + fu(pnl) + ' U<br><small>' + pc(pnl / inv) + '</small>' : '-'}</td><td>${rs.length}</td></tr>`;
-    }).join('') + '</table></div>' +
-    `<details style="margin-top:8px"><summary class="sub" style="cursor:pointer">每一筆明細</summary>` +
-    db.spot.slice().reverse().map(r => `<div class="row sub" style="margin:4px 0">${new Date(r.time).toLocaleDateString()} ${coinOf(r.sym)} ${fu(r.usd)} U @ ${fp(r.price)} ${r.plan ? '(定投)' : ''}<button class="x" onclick="delSpot('${r.id}')" title="刪除">×</button></div>`).join('') +
-    '</details>';
+// 每個幣的持倉:照時間算「平均成本」;賣出時算已實現盈虧
+function holdings(){
+  const H = {};
+  db.spot.slice().sort((a, b) => a.time - b.time).forEach(r => {
+    const h = H[r.sym] = H[r.sym] || {qty: 0, cost: 0, realized: 0, n: 0, first: r.time};
+    h.n++;
+    if(r.side === 'sell'){
+      const avgc = h.qty ? h.cost / h.qty : 0, q = Math.min(r.qty, h.qty);
+      h.realized += r.usd - avgc * q; h.cost -= avgc * q; h.qty -= q;
+    }else{ h.qty += r.qty; h.cost += r.usd; }
+  });
+  return H;
 }
 
-function addSpot(sym, usd, price, plan, deduct){
-  db.spot.push({id: Date.now().toString(36), time: Date.now(), sym, usd, price, qty: usd / price, plan, deduct});
-  if(deduct){ S.spot.budget = Math.max(0, +(S.spot.budget - usd).toFixed(2)); $('spBudget').value = S.spot.budget; }
+function renderHold(){
+  const H = holdings(), syms = Object.keys(H);
+  $('spotHold').innerHTML = !syms.length ? '<div class="sub">還沒有紀錄。</div>' :
+    `<div style="overflow:auto"><table class="tbl"><tr><th>幣</th><th>數量</th><th>平均成本</th><th>現價</th><th>現值</th><th>未實現</th><th>已實現</th><th>抱了</th></tr>` +
+    syms.map(sym => {
+      const h = H[sym], a = st.spot[sym], px = a ? a.p : NaN, val = h.qty * px, pnl = val - h.cost;
+      const days = Math.floor((Date.now() - h.first) / 864e5);
+      return `<tr><td><b>${coinOf(sym)}</b></td><td>${fq(h.qty)}</td><td>${h.qty ? fp(h.cost / h.qty) : '-'}</td><td>${fp(px)}</td>
+        <td>${isFinite(val) ? fu(val) + ' U' : '-'}</td>
+        <td class="${pnl >= 0 ? 'up' : 'down'}">${isFinite(pnl) && h.cost ? (pnl >= 0 ? '+' : '') + fu(pnl) + ' U<br><small>' + pc(pnl / h.cost) + '</small>' : '-'}</td>
+        <td class="${h.realized >= 0 ? 'up' : 'down'}">${h.realized ? (h.realized >= 0 ? '+' : '') + fu(h.realized) + ' U' : '-'}</td><td>${days} 天</td></tr>`;
+    }).join('') + '</table></div>' +
+    `<details style="margin-top:8px"><summary class="sub" style="cursor:pointer">每一筆明細</summary>` +
+    db.spot.slice().reverse().map(r => `<div class="row sub" style="margin:4px 0">${new Date(r.time).toLocaleDateString()} ${coinOf(r.sym)} <b class="${r.side === 'sell' ? 'r' : 'g'}">${r.side === 'sell' ? '賣' : '買'}</b> ${fu(r.usd)} U @ ${fp(r.price)} ${r.plan ? '(定投)' : ''}<button class="x" onclick="delSpot('${r.id}')" title="刪除">×</button></div>`).join('') +
+    '</details>';
+  renderTargets(H);
+}
+
+// 長期持有:目標比例 + 再平衡(偏離太多就把比例拉回來 = 貴的賣一點、便宜的買一點)
+function renderTargets(H = holdings()){
+  const tg = S.spot.targets, out = $('tgOut');
+  if(!tg.length){ out.innerHTML = '<div class="sub">還沒設定。例:BTC 60、ETH 30、SOL 10(加起來 100)。</div>'; return; }
+  const tot = sum(tg.map(t => t.pct));
+  const rows = tg.map(t => {
+    const h = H[t.sym], a = st.spot[t.sym], px = a ? a.p : NaN;
+    return {t, a, val: h && isFinite(px) ? h.qty * px : 0};
+  });
+  const V = sum(rows.map(r => r.val));
+  let maxDrift = 0;
+  const body = rows.map(({t, a, val}) => {
+    const now = V ? val / V * 100 : 0, drift = now - t.pct, want = V * t.pct / 100 - val;
+    maxDrift = Math.max(maxDrift, Math.abs(drift));
+    const act = !V ? '<span class="sub">先建立持倉</span>'
+      : Math.abs(drift) < 5 ? '<span class="sub">不動</span>'
+      : want > 0 ? `<b class="g">買 ${fu(want)} U</b>` : `<b class="r">賣 ${fu(-want)} U</b>`;
+    const hot = a && a.score <= -2 ? `<br><small class="y">偏貴(便宜分數 ${a.score}):有人會先賣 10~20% 落袋</small>` : '';
+    return `<tr><td><b>${coinOf(t.sym)}</b></td><td>${fu(val)} U</td><td>${now.toFixed(1)}%</td><td>${t.pct}%</td>
+      <td class="${Math.abs(drift) >= 5 ? 'y' : ''}">${drift >= 0 ? '+' : ''}${drift.toFixed(1)}</td><td>${act}${hot}</td>
+      <td><button class="x" onclick="delTarget('${t.sym}')" title="移除">×</button></td></tr>`;
+  }).join('');
+  const days = S.spot.lastRebal ? Math.floor((Date.now() - S.spot.lastRebal) / 864e5) : null;
+  const due = V > 0 && maxDrift >= 5 && (days === null || days >= 90);
+  st.rebalDue = due;
+  out.innerHTML = `<div style="overflow:auto"><table class="tbl"><tr><th>幣</th><th>現值</th><th>現在</th><th>目標</th><th>差(百分點)</th><th>建議</th><th></th></tr>${body}</table></div>`
+    + `<div class="sub" style="margin-top:6px">長期持倉合計 ${fu(V)} U|上次再平衡:${days === null ? '還沒做過' : days + ' 天前'}|規則:每 3 個月看一次,差超過 5 個百分點才調</div>`
+    + (tot !== 100 ? msg('bad', `目標加起來是 ${tot}%,要剛好 100%。`) : '')
+    + (due ? msg('warn', '該再平衡了:照上表買賣,調完按下面的按鈕。') : '')
+    + `<div class="row" style="margin-top:8px"><button onclick="doneRebal()">我已經照表調好了</button></div>`;
+}
+function doneRebal(){ S.spot.lastRebal = Date.now(); saveDB(); renderTargets(); toast('記下了。3 個月後我再提醒你。'); }
+function delTarget(sym){ S.spot.targets = S.spot.targets.filter(t => t.sym !== sym); saveDB(); renderTargets(); }
+$('tgAdd').onclick = async () => {
+  const sym = normSym($('tgSym').value), pct = +$('tgPct').value;
+  if(!sym || !(pct > 0 && pct <= 100)) return toast('幣和目標 %(1~100)都要填。', 'bad');
+  try{ st.spot[sym] = await spotAna(sym); }catch(e){ return toast(e.message, 'bad'); }
+  const t = S.spot.targets.find(x => x.sym === sym);
+  if(t) t.pct = pct; else S.spot.targets.push({sym, pct});
+  $('tgSym').value = ''; $('tgPct').value = '';
+  saveDB(); renderTargets();
+};
+
+function addSpot(sym, usd, price, plan, deduct, side = 'buy'){
+  db.spot.push({id: Date.now().toString(36), time: Date.now(), sym, side, usd, price, qty: usd / price, plan, deduct});
+  if(deduct){ S.spot.budget = Math.max(0, +(S.spot.budget + (side === 'sell' ? usd : -usd)).toFixed(2)); $('spBudget').value = S.spot.budget; }
   saveDB(); renderSpot(); spotTick();
-  toast(`記下了:${coinOf(sym)} ${fu(usd)} U。現貨可用剩 ${fu(S.spot.budget)} U。`);
+  toast(`記下了:${side === 'sell' ? '賣出' : '買入'} ${coinOf(sym)} ${fu(usd)} U。現貨可用 ${fu(S.spot.budget)} U。`);
 }
 function recordSpot(i){
   const p = S.spot.plans[i], usd = +$('spU-' + i).value, price = +$('spP-' + i).value;
@@ -1456,7 +1624,7 @@ function recordSpot(i){
 function delSpot(id){
   const r = db.spot.find(x => x.id === id);
   if(!r || !confirm(`刪掉這筆 ${coinOf(r.sym)} ${fu(r.usd)} U 的紀錄?`)) return;
-  if(r.deduct){ S.spot.budget = +(S.spot.budget + r.usd).toFixed(2); $('spBudget').value = S.spot.budget; }
+  if(r.deduct){ S.spot.budget = Math.max(0, +(S.spot.budget + (r.side === 'sell' ? -r.usd : r.usd)).toFixed(2)); $('spBudget').value = S.spot.budget; }
   db.spot = db.spot.filter(x => x.id !== id); saveDB(); renderSpot();
 }
 function delSpotPlan(i){
@@ -1480,10 +1648,14 @@ $('spAdd').onclick = async () => {
   saveDB(); renderSpot(); spotTick();
 };
 $('spOAdd').onclick = async () => {
-  const sym = normSym($('spOSym').value), usd = +$('spOU').value, price = +$('spOP').value;
-  if(!sym || !(usd > 0 && price > 0)) return toast('幣、花了多少 U、成交價都要填。', 'bad');
+  const sym = normSym($('spOSym').value), usd = +$('spOU').value, price = +$('spOP').value, side = $('spOSide').value;
+  if(!sym || !(usd > 0 && price > 0)) return toast('幣、金額、成交價都要填。', 'bad');
+  if(side === 'sell'){
+    const h = holdings()[sym];
+    if(!h || usd / price > h.qty * 1.0001) return toast(`紀錄裡的 ${coinOf(sym)} 只有 ${h ? fq(h.qty) : 0} 顆,賣不了這麼多。`, 'bad');
+  }
   try{ await spotAna(sym); }catch(e){ return toast(e.message, 'bad'); }
-  addSpot(sym, usd, price, false, $('spODeduct').checked);
+  addSpot(sym, usd, price, false, $('spODeduct').checked, side);
   $('spOSym').value = ''; $('spOU').value = ''; $('spOP').value = '';
 };
 
@@ -1550,6 +1722,9 @@ async function selectSym(sym){
   try{ await klines(sym, '1h'); }catch(e){ toast(e.message, 'bad'); return; }
   S.sym = sym; $('sym').value = sym; saveDB();
   st.senti = null; st.ai = null;
+  // 換幣了:自訂一單的價格是舊幣的,清掉
+  ['cEntry', 'cStop', 'cTp1', 'cTp2'].forEach(id => $(id).value = '');
+  st.custom = null; st.showCustom = false; st.cBasis = null; calcCustom();
   $('lp').textContent = '-'; $('lc').textContent = ''; $('lsym').textContent = coinOf(sym);
   st.plans[sym] = st.plans[sym] || null;
   renderCards(); renderWatch(); openWS();
@@ -1589,7 +1764,7 @@ async function tick(){
   });
   fillSpDay(); $('spBudget').value = S.spot.budget; renderSpot(); spotTick();
   setInterval(spotTick, 10 * 60e3);                               // 現貨定投 10 分鐘檢查一次
-  renderBtParams(); $('btSym').value = S.sym;
+  renderBtParams(); $('btSym').value = S.sym; renderSeg();
   initChart();
   await loadRegime();                                             // 先知道大盤,計畫才算得對
   await selectSym(S.sym);

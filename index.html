@@ -49,6 +49,10 @@ header .in{max-width:1400px;margin:0 auto;padding:8px 16px;display:flex;gap:10px
 #chart{height:440px;width:100%;overflow:hidden}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px}
 .legend i{display:inline-block;width:16px;height:0;border-top:2px dashed;vertical-align:middle;margin-right:4px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:none;border-radius:0}
+.seg button:disabled{opacity:.35;cursor:not-allowed}
+button.x{padding:0 6px;background:none;border:none;color:var(--mute)}
 .legend label{display:inline-flex;align-items:center;gap:4px;margin:0;font-size:12px;color:var(--mute);cursor:pointer}
 .legend input{width:auto;margin:0 2px 0 0}
 .votes{font-size:12px;color:var(--mute);margin:6px 0 2px;line-height:1.6}
@@ -167,6 +171,23 @@ footer{color:var(--mute);font-size:12px;text-align:center;margin:8px 0 24px}
     </div>
     <!-- 短中長 -->
     <div id="cards" class="cards"></div>
+    <!-- 自訂一單 -->
+    <div class="card" id="custom" style="margin-top:12px">
+      <h2>自訂一單 <small>想做空、想買現貨、或不照趨勢燈?自己選,我照規則算倉位、提醒風險</small></h2>
+      <div class="row">
+        <div class="seg" id="cMarket"><button data-v="futures" class="on">合約</button><button data-v="spot">現貨</button></div>
+        <div class="seg" id="cSide"><button data-v="long" class="on">做多</button><button data-v="short">做空</button></div>
+        <select id="cTerm" style="width:auto"><option value="short">短線</option><option value="mid" selected>中線</option><option value="long">長線</option></select>
+        <button id="cAuto" class="on">用支撐壓力自動帶入</button>
+      </div>
+      <div class="grid" style="margin-top:8px">
+        <div><label>進場價</label><input id="cEntry" type="number" step="any"></div>
+        <div><label>止損價</label><input id="cStop" type="number" step="any"></div>
+        <div><label>止盈1(平一半,可不填)</label><input id="cTp1" type="number" step="any"></div>
+        <div><label>止盈2(可不填)</label><input id="cTp2" type="number" step="any"></div>
+      </div>
+      <div id="cOut"></div>
+    </div>
   </div>
 
   <aside>
@@ -203,6 +224,7 @@ footer{color:var(--mute);font-size:12px;text-align:center;margin:8px 0 24px}
   <details id="addBox">
     <summary style="cursor:pointer;color:var(--accent)">+ 記一單(或按計畫卡上的「記這一單」)</summary>
     <div class="grid" style="margin-top:8px">
+      <div><label>市場</label><select id="jMarket"><option value="futures">合約</option><option value="spot">現貨</option></select></div>
       <div><label>幣</label><input id="jSym"></div>
       <div><label>期別</label><select id="jTerm"><option value="short">短線</option><option value="mid">中線</option><option value="long">長線</option></select></div>
       <div><label>方向</label><select id="jSide"><option value="long">做多</option><option value="short">做空</option></select></div>
@@ -223,7 +245,7 @@ footer{color:var(--mute);font-size:12px;text-align:center;margin:8px 0 24px}
 
 <!-- 現貨定投 -->
 <div class="card" id="spotCard">
-  <h2>現貨定投 <small>不用槓桿、不會爆倉。便宜時多買、貴時少買;到了定投日或「大筆買入區」會提醒</small></h2>
+  <h2>現貨・定投・長期持有 <small>不用槓桿、不會爆倉。便宜時多買、貴時少買;到了定投日或「大筆買入區」會提醒</small></h2>
   <div class="grid">
     <div><label>現貨可用 USDT</label><input id="spBudget" type="number" step="any"></div>
     <div><label>幣(現貨)</label><input id="spSym" placeholder="例:BTC"></div>
@@ -234,18 +256,26 @@ footer{color:var(--mute);font-size:12px;text-align:center;margin:8px 0 24px}
   </div>
   <div id="spotSum" class="sub" style="margin-top:8px"></div>
   <div id="spotList"></div>
-  <h3>現貨持倉 <small>照紀錄算</small></h3>
+  <h3>現貨持倉 <small>照紀錄算平均成本</small></h3>
   <div id="spotHold"></div>
   <details style="margin-top:10px">
-    <summary style="cursor:pointer;color:var(--accent)">+ 記錄其他買入(大筆買入、或原本就有的,例如 SHIB)</summary>
+    <summary style="cursor:pointer;color:var(--accent)">+ 記錄其他買入/賣出(大筆買入、再平衡、原本就有的,例如 SHIB)</summary>
     <div class="grid" style="margin-top:8px">
+      <div><label>買或賣</label><select id="spOSide"><option value="buy">買入</option><option value="sell">賣出</option></select></div>
       <div><label>幣</label><input id="spOSym" placeholder="例:SHIB"></div>
-      <div><label>花了多少 U</label><input id="spOU" type="number" step="any"></div>
+      <div><label>金額 U(買=花的,賣=拿回的)</label><input id="spOU" type="number" step="any"></div>
       <div><label>成交價</label><input id="spOP" type="number" step="any"></div>
       <div style="align-self:end"><button id="spOAdd" style="width:100%">記錄</button></div>
     </div>
-    <label class="inl"><input type="checkbox" id="spODeduct" checked>從「現貨可用 USDT」扣掉(原本就有的持倉請取消勾選)</label>
+    <label class="inl"><input type="checkbox" id="spODeduct" checked>同步「現貨可用 USDT」(買 = 扣掉、賣 = 加回;原本就有的持倉請取消勾選)</label>
   </details>
+  <h3>長期持有:目標比例 <small>定期把比例拉回來(再平衡)= 自動「漲多的賣一點、跌多的買一點」</small></h3>
+  <div class="row">
+    <input id="tgSym" placeholder="幣,例:BTC" style="width:130px">
+    <input id="tgPct" type="number" placeholder="目標 %" style="width:100px">
+    <button id="tgAdd">加入/修改</button>
+  </div>
+  <div id="tgOut" style="margin-top:8px"></div>
 </div>
 
 <!-- 回測室 -->
