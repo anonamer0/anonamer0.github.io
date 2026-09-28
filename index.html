@@ -185,7 +185,7 @@ footer{color:var(--faint);font-size:12px;text-align:center;margin:16px 0 8px}
   <button data-tab="watch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>監控</button>
   <button data-tab="journal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h11a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2V4a1 1 0 0 1 1-1z"/><path d="M9 8h6M9 12h6"/></svg>紀錄</button>
   <button data-tab="spot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>現貨</button>
-  <button data-tab="lab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/></svg>回測</button>
+  <button data-tab="lab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/></svg>實驗</button>
 </nav>
 
 <main>
@@ -360,8 +360,25 @@ footer{color:var(--faint);font-size:12px;text-align:center;margin:16px 0 8px}
   </div>
 </section>
 
-<!-- 回測 -->
+<!-- 實驗:模擬帳戶 + 回測 -->
 <section class="tab hidden" data-tab="lab">
+  <div class="stack">
+  <div class="card" id="paperCard">
+    <h2>模擬帳戶 <small>虛擬錢,照「突破順勢」自動進出場</small></h2>
+    <div class="row">
+      <button id="paperBtn" class="on">開始模擬</button>
+      <div style="width:110px"><label>起始 U</label><input id="paperCash0" type="number" step="100"></div>
+      <div style="width:100px"><label>單筆風險 %</label><input id="paperRisk" type="number" step="0.5"></div>
+      <div id="paperTerms" class="row" style="align-self:end">
+        <label class="inl" style="margin:0"><input type="checkbox" value="short">短線</label>
+        <label class="inl" style="margin:0"><input type="checkbox" value="mid">中線</label>
+        <label class="inl" style="margin:0"><input type="checkbox" value="long">長線</label>
+      </div>
+      <button id="paperReset" style="align-self:end">重新開始</button>
+    </div>
+    <div id="paperOut"></div>
+    <div id="paperChart" style="height:200px;margin-top:10px" hidden></div>
+  </div>
   <div class="card" id="btCard">
     <h2>回測 <small>把規則放回過去跑一遍</small></h2>
     <div class="row">
@@ -379,6 +396,7 @@ footer{color:var(--faint);font-size:12px;text-align:center;margin:16px 0 8px}
     <div id="btOut"></div>
     <div id="btChart" style="height:220px;margin-top:8px;display:none"></div>
     <div id="btGridOut"></div>
+  </div>
   </div>
 </section>
 

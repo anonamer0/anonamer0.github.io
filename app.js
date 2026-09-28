@@ -86,7 +86,8 @@ const DEF = {total: 890, risk: 2, alloc: {short: 25, mid: 25, long: 25, reserve:
              params: {adx: 20, stK: 3, regime: false, trail: true, bN: 20},   // 判斷參數(回測室可以換)
              strategy: 'breakout',                                     // breakout 突破順勢(回測唯一賺的)/ pullback 回踩進場
              ntfy: {topic: '', on: false},                             // 手機推播
-             dirMode: 'auto'};                                         // 計畫方向:跟趨勢 / 只看做多 / 只看做空
+             dirMode: 'auto',                                          // 計畫方向:跟趨勢 / 只看做多 / 只看做空
+             paper: {on: false, start: 0, cash0: 1000, risk: 2, terms: ['mid']}};   // 模擬帳戶(虛擬錢)
 let db = {settings: {}, trades: [], spot: []}, S;
 
 // 電腦版:紀錄存在資料夾的「交易紀錄.json」(透過本機小伺服器)
@@ -95,7 +96,8 @@ let SERVER = true;
 function fillDB(j){
   const D = JSON.parse(JSON.stringify(DEF));
   db.settings = {...D, ...(j.settings || {})};
-  ['alloc', 'show', 'spot', 'params', 'ntfy'].forEach(k => db.settings[k] = {...D[k], ...(db.settings[k] || {})});
+  ['alloc', 'show', 'spot', 'params', 'ntfy', 'paper'].forEach(k => db.settings[k] = {...D[k], ...(db.settings[k] || {})});
+  db.paper = j.paper || {pos: [], closed: [], eq: [], used: {}};
   db.trades = j.trades || [];
   db.spot = j.spot || [];
   db.bt = j.bt || {};
@@ -145,10 +147,11 @@ async function importDB(file){
   try{ j = JSON.parse(await file.text()); }catch(e){ return toast('這個檔案不是交易紀錄。', 'bad'); }
   if(!j || !j.settings || !Array.isArray(j.trades)) return toast('這個檔案不是交易紀錄。', 'bad');
   const merge = (a, b) => { const m = new Map(a.map(x => [x.id, x])); (b || []).forEach(x => m.set(x.id, x)); return [...m.values()]; };
-  const keep = {sym: S.sym, tf: S.tf, alertOn: S.alertOn, show: S.show, ntfy: S.ntfy};
+  const keep = {sym: S.sym, tf: S.tf, alertOn: S.alertOn, show: S.show, ntfy: S.ntfy, paper: S.paper};
+  const myPaper = db.paper;   // 模擬帳戶留在跑它的那台裝置,不被匯入蓋掉
   const nt = merge(db.trades, j.trades).length - db.trades.length, ns = merge(db.spot, j.spot).length - db.spot.length;
   fillDB({settings: {...j.settings, ...keep}, trades: merge(db.trades, j.trades), spot: merge(db.spot, j.spot), bt: {...db.bt, ...(j.bt || {})},
-          trash: merge(db.trash || [], j.trash).sort((a, b) => b.time - a.time)});
+          trash: merge(db.trash || [], j.trash).sort((a, b) => b.time - a.time), paper: myPaper});
   saveDB();
   toast(`匯入完成:新增 ${nt} 筆合約、${ns} 筆現貨紀錄,設定已更新。`);
   fillSettings(); renderJournal(); renderSpot(); renderBtParams(); refreshAllPlans();
@@ -327,7 +330,7 @@ function analyze(bars){
   const N = S.params.bN || 20, hl = arr => [Math.max(...arr.map(b => b.h)), Math.min(...arr.map(b => b.l))];
   const [hiNow, loNow] = hl(closed.slice(-N)), [hiPrev, loPrev] = hl(closed.slice(-N - 1, -1));
   return {dir, e20, e50, atr, adx, price, emaUp, emaDn, strong, stUp, st: ST.line.at(-1), bb,
-          hiNow, loNow, hiPrev, loPrev, lastC: c,
+          hiNow, loNow, hiPrev, loPrev, lastC: c, lastT: closed.at(-1).t,
           lv: findLevels(closed.slice(-200), atr, price)};
 }
 
@@ -1166,6 +1169,7 @@ function restore(id){
   else if(x.kind === 'watch'){ if(!S.watch.includes(d)) S.watch.push(d); }
   else if(x.kind === 'dca'){ if(!S.spot.plans.some(p => p.sym === d.sym)) S.spot.plans.push(d); }
   else if(x.kind === 'target'){ const t = S.spot.targets.find(t => t.sym === d.sym); if(t) t.pct = d.pct; else S.spot.targets.push(d); }
+  else if(x.kind === 'paper'){ db.paper = d.paper; S.paper = {...S.paper, ...d.cfg}; renderPaper(); }
   db.trash = db.trash.filter(y => y.id !== id);
   saveDB(); renderTrash(); renderJournal(); renderWatch(); $('spBudget').value = S.spot.budget; renderSpot();
   toast(`已復原:${x.label}`);
@@ -1719,6 +1723,146 @@ $('btAll').onclick = async () => {
 };
 
 /* =========================================================
+   模擬帳戶(紙上交易):用虛擬錢照「突破順勢」自動進出場
+   第 1 關:跑滿 60 天、30 單 → 第 2 關:實際成績和回測差不多 → 才考慮小額真錢
+   App 開著才會跑(電腦版開著最好);關著時被打到的止損,下次打開會用 15 分 K 補算
+   ========================================================= */
+const paperCash = () => S.paper.cash0 + sum(db.paper.closed.map(t => t.pnl)) - sum(db.paper.pos.map(x => x.fee0));
+function paperEquity(){
+  let eq = paperCash();
+  db.paper.pos.forEach(x => { const p = st.price[x.sym]; if(isFinite(p)) eq += (x.L ? p - x.e : x.e - p) * x.q; });
+  return eq;
+}
+function paperOpen(sym, term, L, p, m){
+  const eq = paperEquity(), stop = L ? p - 2 * m.atr : p + 2 * m.atr, dist = 2 * m.atr / p;
+  const notional = Math.min(eq * S.paper.risk / 100 / (dist + FEE), eq * 5);   // 最多 5 倍,避免誇張
+  const q = notional / p;
+  db.paper.pos.push({id: Date.now().toString(36) + sym, sym, term, L, e: p, q, stop, stop0: stop, t0: Date.now(),
+    fee0: notional * FEE / 2, riskU: q * Math.abs(p - stop) + notional * FEE, barT: m.lastT, checked: Date.now()});
+  notify(`模擬:${L ? '做多' : '做空'} ${coinOf(sym)}`, `進場 ${fp(p)}|止損 ${fp(stop)}|${fq(q)} 顆(虛擬錢)`);
+}
+function paperClose(x, exit, t, why){
+  const pnl = (x.L ? exit - x.e : x.e - exit) * x.q - x.fee0 - exit * x.q * FEE / 2;
+  db.paper.closed.push({sym: x.sym, term: x.term, L: x.L, e: x.e, exit, q: x.q, t0: x.t0, t1: t, pnl: +pnl.toFixed(4), r: pnl / x.riskU, why});
+  db.paper.pos = db.paper.pos.filter(y => y.id !== x.id);
+  notify(`模擬:${coinOf(x.sym)} 出場(${why})`, `${pnl >= 0 ? '+' : ''}${fu(pnl)} U(${(pnl / x.riskU).toFixed(2)}R,虛擬錢)`);
+}
+async function paperTick(){
+  if(!S.paper.on) return;
+  const P = db.paper, now = Date.now();
+  P.used = P.used || {};
+  let changed = false;
+  // 1) 管理持倉:止損 → 新 K 棒收盤時移動止損 / SuperTrend 翻轉出場
+  for(const x of [...P.pos]){
+    const T = TERMS.find(t => t.key === x.term), m = st.ana[x.sym] && st.ana[x.sym][T.tf], p = st.price[x.sym];
+    if(now - x.checked > 3 * 60e3){   // App 關了一陣子:用 15 分 K 補查有沒有打到止損
+      try{
+        const hitBar = (await klines(x.sym, '15m')).find(b => b.t > x.checked && (x.L ? b.l <= x.stop : b.h >= x.stop));
+        if(hitBar){ paperClose(x, x.stop, hitBar.t, '止損(App 關著時)'); changed = true; continue; }
+      }catch(e){}
+    }
+    x.checked = now;
+    if(isFinite(p) && (x.L ? p <= x.stop : p >= x.stop)){ paperClose(x, p, now, x.stop === x.stop0 ? '止損' : '移動止損'); changed = true; continue; }
+    if(m && m.lastT !== x.barT){
+      x.barT = m.lastT; changed = true;
+      if(m.stUp !== x.L){ paperClose(x, p, now, 'SuperTrend 翻轉'); continue; }
+      if(x.L ? m.st > x.stop : m.st < x.stop) x.stop = m.st;
+    }
+  }
+  // 2) 找新訊號:大週期 SuperTrend 定方向 + 主週期剛收盤突破
+  for(const sym of S.watch){
+    const d = st.ana[sym]; if(!d) continue;
+    for(const key of S.paper.terms){
+      const T = TERMS.find(t => t.key === key), m = d[T.tf], h = d[T.htf], p = st.price[sym];
+      if(!m || !h || !isFinite(p) || P.pos.some(x => x.sym === sym && x.term === key)) continue;
+      const L = h.stUp, fresh = L ? m.lastC > m.hiPrev : m.lastC < m.loPrev;
+      if(!fresh || P.used[sym + key] === m.lastT) continue;
+      P.used[sym + key] = m.lastT; changed = true;
+      if(Math.abs(p - m.lastC) > 0.5 * m.atr) continue;   // 已經跑遠了,不追(和回測一樣只在收盤後進場)
+      const rg = st.regime && st.regime.state;
+      if(S.params.regime && ((rg === 'bear' && L) || (rg === 'bull' && !L))) continue;
+      paperOpen(sym, key, L, p, m);
+    }
+  }
+  // 3) 每小時記一筆權益(畫曲線用)
+  const last = P.eq.at(-1);
+  if(!last || now - last.t >= 36e5){ P.eq.push({t: now, v: +paperEquity().toFixed(2)}); P.eq = P.eq.slice(-2000); changed = true; }
+  if(changed) saveDB();
+  renderPaper();
+}
+
+// 回測預期:監控清單各幣「突破順勢」的回測平均(回測分頁跑過才有)
+function paperExpect(){
+  const key = ['B', S.params.bN || 20, S.params.stK, +S.params.regime].join('/'), xs = [];
+  S.watch.forEach(sym => S.paper.terms.forEach(t => { const b = (db.bt || {})[sym + '|' + t]; if(b && b.p === key && b.n >= 10) xs.push(b.exp); }));
+  return xs.length ? avg(xs) : null;
+}
+let paperChart, paperLine;
+function renderPaper(){
+  const C = S.paper, P = db.paper, box = $('paperOut');
+  $('paperBtn').textContent = C.on ? '暫停' : C.start ? '繼續' : '開始模擬';
+  $('paperBtn').classList.toggle('on', !C.on);
+  $('paperCash0').value = C.cash0; $('paperRisk').value = C.risk;
+  document.querySelectorAll('#paperTerms input').forEach(cb => cb.checked = C.terms.includes(cb.value));
+  if(!C.start){ box.innerHTML = '<div class="sub" style="margin-top:8px">按「開始模擬」:程式用虛擬錢照「突破順勢」自動進出場。App 開著才會跑,放在電腦版最好。</div>'; $('paperChart').hidden = true; return; }
+  const eq = paperEquity(), cl = P.closed, s = cl.length ? btStats(cl) : null;
+  const days = Math.floor((Date.now() - C.start) / 864e5), ex = paperExpect();
+  const box2 = (label, v, cls = '') => `<div><small>${label}</small><b class="${cls}">${v}</b></div>`;
+  const pass1 = cl.length >= 30 && days >= 60;
+  const pass2 = pass1 && s && s.exp > 0 && (ex == null || s.exp >= ex - 0.2);
+  const rows = P.pos.map(x => {
+    const p = st.price[x.sym], u = isFinite(p) ? (x.L ? p - x.e : x.e - p) * x.q : NaN;
+    return `<div class="trash-item"><span><b>${coinOf(x.sym)}</b> <span class="${x.L ? 'g' : 'r'}">${x.L ? '多' : '空'}</span> ${TERM_NAME[x.term]} · 進 ${fp(x.e)} · 止損 ${fp(x.stop)}${x.stop !== x.stop0 ? '(已移動)' : ''}</span>
+      <b class="${u >= 0 ? 'up' : 'down'}">${isFinite(u) ? (u >= 0 ? '+' : '') + fu(u) + ' U' : '-'}</b></div>`;
+  }).join('');
+  box.innerHTML = `<div class="stat" style="margin-top:10px">
+      ${box2('權益(虛擬)', fu(eq) + ' U', eq >= C.cash0 ? 'up' : 'down')}${box2('報酬', pc(eq / C.cash0 - 1), eq >= C.cash0 ? 'up' : 'down')}
+      ${box2('交易數', cl.length)}${box2('勝率', s ? (s.win * 100).toFixed(0) + '%' : '-')}
+      ${box2('平均每單', s ? (s.exp >= 0 ? '+' : '') + s.exp.toFixed(2) + 'R' : '-', s && s.exp >= 0 ? 'up' : 'down')}
+      ${box2('最大回撤', s ? '-' + s.dd.toFixed(1) + 'R' : '-')}
+    </div>
+    ${msg(pass1 ? 'ok' : 'warn', `第 1 關:${cl.length} / 30 單 · 已跑 ${days} / 60 天 ${pass1 ? '✓ 過關' : ''}`)}
+    ${msg(pass2 ? 'ok' : 'warn', `第 2 關(對帳):回測預期 ${ex == null ? '—(先到回測跑監控清單)' : (ex >= 0 ? '+' : '') + ex.toFixed(2) + 'R/單'} · 實際 ${s ? (s.exp >= 0 ? '+' : '') + s.exp.toFixed(2) + 'R/單' : '—'} ${pass2 ? '✓ 過關' : ''}`)}
+    <h3>模擬持倉 ${P.pos.length} 筆</h3>${rows || '<div class="sub">目前沒有持倉,等突破訊號。</div>'}
+    <details class="more"><summary>最近 20 筆模擬交易</summary>${cl.slice(-20).reverse().map(t => `<div class="trash-item"><span>${new Date(t.t1).toLocaleDateString()} <b>${coinOf(t.sym)}</b> ${t.L ? '多' : '空'} · ${fp(t.e)} → ${fp(t.exit)} <small>(${esc(t.why)})</small></span><b class="${t.pnl >= 0 ? 'up' : 'down'}">${t.r >= 0 ? '+' : ''}${t.r.toFixed(2)}R</b></div>`).join('') || '<div class="sub">還沒有。</div>'}</details>`;
+  // 權益曲線
+  const ch = $('paperChart');
+  ch.hidden = P.eq.length < 2 || !window.LightweightCharts;
+  if(ch.hidden) return;
+  if(!paperChart){
+    paperChart = LightweightCharts.createChart(ch, {autoSize: true, layout: {background: {color: '#161920'}, textColor: '#c9ced6'},
+      grid: {vertLines: {color: '#1f232c'}, horzLines: {color: '#1f232c'}}, timeScale: {borderColor: '#272c37', timeVisible: true}, rightPriceScale: {borderColor: '#272c37'}});
+    paperLine = paperChart.addBaselineSeries({baseValue: {type: 'price', price: C.cash0}});
+  }
+  paperLine.applyOptions({baseValue: {type: 'price', price: C.cash0}});
+  let lastT = 0;
+  paperLine.setData(P.eq.map(e => { let time = Math.floor(e.t / 1000) + TZ; if(time <= lastT) time = lastT + 1; lastT = time; return {time, value: e.v}; }));
+}
+$('paperBtn').onclick = () => {
+  const C = S.paper;
+  if(!C.start){
+    C.start = Date.now();
+    db.paper = {pos: [], closed: [], eq: [{t: Date.now(), v: C.cash0}], used: {}};
+    toast(`模擬開始:虛擬 ${fu(C.cash0)} U,照「突破順勢」自動進出場。App 開著才會跑。`);
+  }
+  C.on = !C.on; saveDB(); renderPaper(); if(C.on) paperTick();
+};
+$('paperReset').onclick = () => {
+  if(!S.paper.start) return;
+  if(!confirm('重新開始模擬?目前的模擬紀錄會放進「最近刪除」。')) return;
+  trash('paper', {paper: JSON.parse(JSON.stringify(db.paper)), cfg: {...S.paper}}, `模擬帳戶(${db.paper.closed.length} 單)`);
+  S.paper.start = 0; S.paper.on = false; db.paper = {pos: [], closed: [], eq: [], used: {}};
+  saveDB(); renderPaper();
+};
+$('paperCash0').onchange = () => { const v = +$('paperCash0').value; if(v > 0){ S.paper.cash0 = v; saveDB(); renderPaper(); } };
+$('paperRisk').onchange = () => { const v = +$('paperRisk').value; if(v > 0 && v <= 5){ S.paper.risk = v; saveDB(); } else toast('風險請填 0~5%。', 'bad'); renderPaper(); };
+$('paperTerms').onchange = () => {
+  S.paper.terms = [...document.querySelectorAll('#paperTerms input:checked')].map(cb => cb.value);
+  if(!S.paper.terms.length){ S.paper.terms = ['mid']; toast('至少要選一個期別。', 'bad'); }
+  saveDB(); renderPaper();
+};
+
+/* =========================================================
    現貨定投:不用槓桿、不會爆倉,長期慢慢買
    便宜分數:越便宜分數越高 → 這期多買;太貴 → 少買
    ========================================================= */
@@ -2037,11 +2181,12 @@ async function tick(){
   if(busy) return;
   busy = true;
   await loadRegime();
-  const syms = [...new Set([S.sym, ...S.watch, ...openTrades().map(t => t.sym)])];
+  const syms = [...new Set([S.sym, ...S.watch, ...openTrades().map(t => t.sym), ...db.paper.pos.map(x => x.sym)])];
   for(const sym of syms){
     try{ await fetchAna(sym); buildPlans(sym); checkAlerts(sym); }
     catch(e){ st.plans[sym] = {error: e.message}; }
   }
+  try{ await paperTick(); }catch(e){}   // 模擬帳戶:每分鐘看一次訊號和持倉
   busy = false;
   renderCards(); renderWatch(); renderJournal(); renderSpot();
 }
@@ -2062,7 +2207,7 @@ async function tick(){
   });
   fillSpDay(); $('spBudget').value = S.spot.budget; renderSpot(); spotTick();
   setInterval(spotTick, 10 * 60e3);                               // 現貨定投 10 分鐘檢查一次
-  renderBtParams(); $('btSym').value = S.sym; renderSeg(); renderTrash(); renderDirMode();
+  renderBtParams(); $('btSym').value = S.sym; renderSeg(); renderTrash(); renderDirMode(); renderPaper();
   showTab(lsGet('ciel_tab') || 'market');
   initChart();
   await loadRegime();                                             // 先知道大盤,計畫才算得對
