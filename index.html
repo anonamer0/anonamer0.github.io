@@ -2,321 +2,378 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>合約風控助手</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="風控助手">
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#0e1014">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="icon" href="icon.png">
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
-:root{--bg:#0f1115;--card:#1a1d24;--line:#2a2f3a;--text:#e8eaed;--mute:#8b93a1;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--blue:#60a5fa;--orange:#f97316;--accent:#a78bfa}
+:root{
+  --bg:#0e1014; --s1:#161920; --s2:#1f232c; --line:#272c37; --text:#e9ecf1; --mute:#8a93a3; --faint:#5d6574;
+  --accent:#a78bfa; --accent-bg:#221d33; --green:#22c55e; --red:#ef4444; --yellow:#eab308; --blue:#60a5fa; --orange:#f97316;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font-family:"Microsoft JhengHei","PingFang TC",system-ui,sans-serif;line-height:1.5;font-size:14px}
-main{max-width:1400px;margin:0 auto;padding:12px 16px}
-h2{font-size:16px;margin:0 0 10px}
-h3{font-size:14px;margin:14px 0 6px;color:var(--mute)}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",system-ui,sans-serif;font-size:14px;line-height:1.5;font-variant-numeric:tabular-nums}
+main{max-width:1200px;margin:0 auto;padding:12px 16px 24px}
+h2{font-size:15px;margin:0 0 10px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+h2 small{font-weight:400}
+h3{font-size:13px;margin:16px 0 6px;color:var(--mute);font-weight:600}
 small,.sub{color:var(--mute);font-size:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
-.hidden{display:none}
-input,select{background:#0b0d11;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 9px;font-size:14px;width:100%}
-button{background:#2a2f3a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 11px;font-size:13px;cursor:pointer;white-space:nowrap}
+.card{background:var(--s1);border:1px solid var(--line);border-radius:12px;padding:14px}
+.stack{display:grid;gap:12px;align-content:start}
+.stack>*{min-width:0}
+.hidden{display:none!important}
+input,select{background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font-size:14px;width:100%;font-family:inherit}
+input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button{background:var(--s2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;white-space:nowrap;font-family:inherit}
 button:hover{border-color:var(--accent)}
-button.on{background:var(--accent);color:#111;border-color:var(--accent);font-weight:700}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.on{background:var(--accent);color:#16112a;border-color:var(--accent);font-weight:700}
+button.x{padding:0 6px;background:none;border:none;color:var(--faint);font-size:16px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
 label{display:block;font-size:12px;color:var(--mute);margin-bottom:3px}
-.up{color:var(--green)} .down{color:var(--red)}
-.g{color:var(--green)} .r{color:var(--red)} .y{color:var(--yellow)}
-
-/* 頂部列 */
-header{position:sticky;top:0;z-index:5;background:#0b0d11ee;backdrop-filter:blur(6px);border-bottom:1px solid var(--line)}
-header .in{max-width:1400px;margin:0 auto;padding:8px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-.brand{font-weight:700;font-size:16px;margin-right:4px}
-#sym{width:150px}
-#live{display:flex;gap:8px;align-items:baseline;margin-left:auto}
-#lp{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
-.conn{width:9px;height:9px;border-radius:50%;background:var(--red);display:inline-block}
-.conn.ok{background:var(--green)}
-
-/* 版面 */
-.layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px}
-@media (max-width:1050px){.layout{grid-template-columns:minmax(0,1fr)}}
-.layout>*{min-width:0}
-#chart{height:440px;width:100%;overflow:hidden}
-.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px}
-.legend i{display:inline-block;width:16px;height:0;border-top:2px dashed;vertical-align:middle;margin-right:4px}
-.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.seg button{border:none;border-radius:0}
-.seg button:disabled{opacity:.35;cursor:not-allowed}
-button.x{padding:0 6px;background:none;border:none;color:var(--mute)}
-.legend label{display:inline-flex;align-items:center;gap:4px;margin:0;font-size:12px;color:var(--mute);cursor:pointer}
-.legend input{width:auto;margin:0 2px 0 0}
-.votes{font-size:12px;color:var(--mute);margin:6px 0 2px;line-height:1.6}
-.lvls{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:13px;margin-top:8px}
-
-/* 短中長卡 */
-.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-@media (max-width:1250px){.cards{grid-template-columns:minmax(0,1fr)}}
-.term .th{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.term .th b{font-size:16px}
-.dot{width:14px;height:14px;border-radius:50%;display:inline-block;flex:none}
-.dot.g{background:var(--green);box-shadow:0 0 10px var(--green)}
-.dot.r{background:var(--red);box-shadow:0 0 10px var(--red)}
-.dot.y{background:var(--yellow);box-shadow:0 0 10px var(--yellow)}
-.badge{margin-left:auto;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700}
-.badge.go{background:var(--green);color:#062}
-.badge.wait{background:#3a3010;color:#fde68a}
-.badge.no{background:#2a2f3a;color:var(--mute)}
-.plan{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}
-.plan td{padding:4px 2px;border-bottom:1px solid #232733;vertical-align:top}
-.plan td:first-child{color:var(--mute);white-space:nowrap;width:92px}
-.msg{padding:7px 9px;border-radius:8px;font-size:13px;margin-top:6px}
+.up,.g{color:var(--green)} .down,.r{color:var(--red)} .y{color:var(--yellow)}
+.msg{padding:7px 10px;border-radius:8px;font-size:13px;margin-top:6px}
 .msg.ok{background:#12301f;color:#86efac}
 .msg.warn{background:#3a3010;color:#fde68a}
 .msg.bad{background:#3b1414;color:#fca5a5}
+details.more{margin-top:8px}
+details.more>summary{cursor:pointer;color:var(--mute);font-size:12px;list-style:none;user-select:none}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>summary::before{content:"▸ "}
+details.more[open]>summary::before{content:"▾ "}
+details.add>summary{cursor:pointer;color:var(--accent);list-style:none}
+details.add>summary::-webkit-details-marker{display:none}
 
-/* 右欄 */
+/* 頂部 */
+header{position:sticky;top:0;z-index:10;background:rgba(14,16,20,.94);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.bar{max-width:1200px;margin:0 auto;padding:8px 16px 6px;display:flex;align-items:center;gap:10px}
+#sym{width:140px;font-weight:700;text-transform:uppercase}
+#live{display:flex;align-items:baseline;gap:6px;min-width:0}
+#lp{font-size:20px;font-weight:700}
+.conn{width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block;align-self:center}
+.conn.ok{background:var(--green)}
+.hdr-act{margin-left:auto;display:flex;gap:6px}
+.chip{border-radius:999px;padding:5px 10px}
+.quick{max-width:1200px;margin:0 auto;padding:0 16px 8px;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.quick::-webkit-scrollbar{display:none}
+.quick button{border-radius:999px;padding:3px 10px;font-size:12px;flex:none}
+.tabs{max-width:1200px;margin:0 auto;padding:0 16px;display:flex;gap:2px;border-bottom:1px solid var(--line)}
+.tabs button{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:9px 12px;color:var(--mute);display:flex;align-items:center;gap:6px}
+.tabs button.on{color:var(--text);border-bottom-color:var(--accent);background:none;font-weight:700}
+.tabs svg{width:18px;height:18px;flex:none}
+
+/* 版面 */
+.two-col{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:12px}
+@media (max-width:1000px){.two-col{grid-template-columns:minmax(0,1fr)}}
+.two-col>*{min-width:0}
+.chart-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.chart-head h2{margin:0}
+.tf{display:flex;gap:4px}
+.tf button{padding:4px 9px;font-size:12px}
+#chart{height:420px;width:100%;overflow:hidden}
+.legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
+.legend label{display:inline-flex;align-items:center;gap:4px;margin:0;font-size:12px;color:var(--mute);cursor:pointer}
+.legend input{width:auto;margin:0}
+.legend i{display:inline-block;width:14px;height:0;border-top:2px dashed;vertical-align:middle}
+.lvls{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:12px;margin-top:8px}
+
+/* 計畫卡 */
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:1000px){.cards{grid-template-columns:minmax(0,1fr)}}
+.th{display:flex;align-items:center;gap:8px}
+.th b{font-size:15px}
+.dot{width:12px;height:12px;border-radius:50%;display:inline-block;flex:none}
+.dot.g{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot.r{background:var(--red);box-shadow:0 0 8px var(--red)}
+.dot.y{background:var(--yellow);box-shadow:0 0 8px var(--yellow)}
+.badge{margin-left:auto;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700}
+.badge.go{background:var(--green);color:#052e14}
+.badge.wait{background:#3a3010;color:#fde68a}
+.badge.no{background:var(--s2);color:var(--mute)}
+.why{color:var(--mute);font-size:13px;margin-top:8px}
+.kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:10px 0 6px}
+.kpis div{background:var(--bg);border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;min-width:0}
+.kpis small{font-size:11px}
+.kpis b{font-size:15px;overflow:hidden;text-overflow:ellipsis}
+.line{font-size:13px;margin-top:4px}
+.plan{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+.plan td{padding:4px 2px;border-bottom:1px solid var(--s2);vertical-align:top}
+.plan td:first-child{color:var(--mute);white-space:nowrap;width:84px}
+.votes{font-size:12px;color:var(--mute);margin:6px 0 2px;line-height:1.6}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:none;border-radius:0}
+
+/* 監控、情緒、新聞 */
 .wt{width:100%;border-collapse:collapse;font-size:13px}
 .wt th{color:var(--mute);font-weight:400;text-align:left;padding:4px}
-.wt td{padding:6px 4px;border-top:1px solid #232733;cursor:pointer}
-.wt tr.sel td{background:#221d33}
-.wt button.x{padding:0 6px;background:none;border:none;color:var(--mute)}
-.gauge{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;font-size:13px}
+.wt td{padding:7px 4px;border-top:1px solid var(--s2);cursor:pointer}
+.wt tr.sel td{background:var(--accent-bg)}
+.gauge{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:13px}
 .gauge span:nth-child(odd){color:var(--mute)}
-.news{list-style:none;padding:0;margin:0;max-height:360px;overflow:auto}
-.news li{padding:7px 0;border-top:1px solid #232733;font-size:13px}
+.news{list-style:none;padding:0;margin:0;max-height:420px;overflow:auto}
+.news li{padding:7px 0;border-top:1px solid var(--s2);font-size:13px}
 .news a{color:var(--text);text-decoration:none}
 .news a:hover{color:var(--accent)}
-.tag{font-size:11px;padding:0 5px;border-radius:4px;background:#2a2f3a;color:var(--mute);margin-left:4px}
+.tag{font-size:11px;padding:1px 6px;border-radius:4px;background:var(--s2);color:var(--mute);margin-left:4px;white-space:nowrap}
 
-/* 交易紀錄 */
-.trade{border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 0}
-.trade .row input{width:130px}
+/* 紀錄 */
+.trade{border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 0;background:var(--bg)}
+.trow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.trow .pnl{margin-left:auto;font-weight:700}
+.trade .row input{width:120px}
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
-.tbl th{color:var(--mute);font-weight:400;text-align:left;padding:5px;border-bottom:1px solid var(--line)}
-.tbl td{padding:5px;border-bottom:1px solid #232733}
-.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-@media (max-width:900px){.two{grid-template-columns:1fr}}
+.tbl th{color:var(--mute);font-weight:400;text-align:left;padding:5px;border-bottom:1px solid var(--line);white-space:nowrap}
+.tbl td{padding:5px;border-bottom:1px solid var(--s2)}
+.stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:8px}
+.stat div{background:var(--bg);border-radius:8px;padding:8px}
+.stat b{display:block;font-size:16px}
 .check label{display:flex;gap:8px;align-items:center;color:var(--text);font-size:14px;margin:6px 0}
 .check input,.inl input{width:auto}
 .inl{display:flex;gap:6px;align-items:center;color:var(--text);font-size:13px;margin:8px 0}
-.stat{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:8px}
-.stat div{background:#0b0d11;border-radius:8px;padding:8px}
-.stat b{display:block;font-size:17px}
+.trash-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--s2);font-size:13px}
+.trash-item span{flex:1;min-width:0}
 
-#toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:20;max-width:380px}
-.toast{white-space:pre-line;padding:10px 12px;border-radius:10px;font-size:14px;box-shadow:0 6px 24px #0008}
+#toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:30;max-width:380px}
+.toast{white-space:pre-line;padding:10px 12px;border-radius:10px;font-size:14px;box-shadow:0 6px 24px #0008;display:flex;align-items:center;gap:10px}
+.toast span{flex:1}
 .toast.ok{background:#12301f;color:#bbf7d0;border:1px solid var(--green)}
 .toast.bad{background:#3b1414;color:#fecaca;border:1px solid var(--red)}
-footer{color:var(--mute);font-size:12px;text-align:center;margin:8px 0 24px}
+.toast button{padding:3px 10px}
+footer{color:var(--faint);font-size:12px;text-align:center;margin:16px 0 8px}
+
+@media (max-width:400px){#lc{display:none}}
+/* 手機:分頁列放到底部,像 App */
+@media (max-width:700px){
+  .bar{padding:8px 12px 6px;gap:8px}
+  #sym{width:104px}
+  #lp{font-size:18px}
+  .quick{padding:0 12px 8px}
+  main{padding:10px 12px calc(76px + env(safe-area-inset-bottom,0px))}
+  .tabs{position:fixed;left:0;right:0;bottom:0;z-index:20;max-width:none;padding:4px 0 calc(4px + env(safe-area-inset-bottom,0px));background:rgba(14,16,20,.97);border-top:1px solid var(--line);border-bottom:none;justify-content:space-around}
+  .tabs button{flex:1;flex-direction:column;gap:2px;font-size:11px;padding:6px 2px;border-bottom:none}
+  .tabs button.on{color:var(--accent)}
+  #chart{height:320px}
+  .lvls{grid-template-columns:1fr}
+  #toasts{left:12px;right:12px;bottom:calc(72px + env(safe-area-inset-bottom,0px));max-width:none}
+}
 </style>
 </head>
 <body>
-<header><div class="in">
-  <span class="brand">合約風控助手</span>
-  <input id="sym" placeholder="例:SOLUSDT">
-  <div class="row" id="quick"></div>
-  <div id="live"><span class="sub" id="lsym"></span><span id="lp">-</span><span id="lc"></span><span id="conn" class="conn" title="即時連線"></span></div>
-  <button id="regime" title="大盤燈">大盤 …</button>
-  <button id="alertBtn">🔔 提醒:關</button>
-  <button id="setBtn">⚙ 設定</button>
-</div></header>
+<header>
+  <div class="bar">
+    <input id="sym" placeholder="幣,例:SOL" aria-label="幣種">
+    <div id="live"><span id="lsym" hidden></span><span id="lp">-</span><span id="lc"></span><span id="conn" class="conn" title="即時連線"></span></div>
+    <div class="hdr-act">
+      <button id="regime" class="chip" title="大盤燈">大盤 …</button>
+      <button id="alertBtn" class="chip" title="進場提醒">🔕</button>
+      <button id="setBtn" class="chip" title="設定">⚙</button>
+    </div>
+  </div>
+  <div class="quick" id="quick"></div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="market" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v16h16"/><path d="M8 15l3-4 3 2 5-6"/></svg>行情</button>
+  <button data-tab="watch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>監控</button>
+  <button data-tab="journal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h11a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2V4a1 1 0 0 1 1-1z"/><path d="M9 8h6M9 12h6"/></svg>紀錄</button>
+  <button data-tab="spot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>現貨</button>
+  <button data-tab="lab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/></svg>回測</button>
+</nav>
 
 <main>
 <!-- 設定 -->
-<section id="settings" class="card hidden">
+<section id="settings" class="card hidden" style="margin-bottom:12px">
   <h2>資金設定</h2>
   <div class="grid">
     <div><label>合約可用 USDT</label><input id="sTotal" type="number" step="1"></div>
-    <div><label>單筆最多虧(總資金 %)</label><input id="sRisk" type="number" step="0.5"></div>
+    <div><label>單筆最多虧 %</label><input id="sRisk" type="number" step="0.5"></div>
     <div><label>短線 %</label><input id="sShort" type="number" step="5"></div>
     <div><label>中線 %</label><input id="sMid" type="number" step="5"></div>
     <div><label>長線 %</label><input id="sLong" type="number" step="5"></div>
-    <div><label>備用金 %(不動)</label><input id="sReserve" type="number" step="5"></div>
+    <div><label>備用金 %</label><input id="sReserve" type="number" step="5"></div>
   </div>
   <div id="allocOut" class="sub" style="margin-top:8px"></div>
-  <div class="row" style="margin-top:10px">
-    <button id="keyBtn">設定 AI 金鑰(Groq)</button>
-    <span id="keyStat" class="sub"></span>
-  </div>
-  <h2 style="margin-top:16px">手機推播</h2>
-  <div class="row">
-    <button id="ntfyBtn">開啟手機推播</button>
-    <button id="ntfyTest" hidden>送測試通知</button>
-    <span id="ntfyStat" class="sub"></span>
-  </div>
+  <h3>AI 新聞判讀</h3>
+  <div class="row"><button id="keyBtn">設定 Groq 金鑰</button><span id="keyStat" class="sub"></span></div>
+  <h3>手機推播</h3>
+  <div class="row"><button id="ntfyBtn">開啟手機推播</button><button id="ntfyTest" hidden>送測試通知</button><span id="ntfyStat" class="sub"></span></div>
   <div id="ntfyHelp" class="sub" style="margin-top:6px"></div>
 </section>
 
-<div class="layout">
-  <div>
-    <!-- K 線 -->
+<!-- 行情 -->
+<section class="tab" data-tab="market">
+  <div class="stack">
     <div class="card">
-      <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0" id="chartTitle">K 線</h2>
-        <div class="row" id="tfBtns"></div>
-      </div>
-      <div id="chart" style="margin-top:8px"></div>
+      <div class="chart-head"><h2 id="chartTitle">K 線</h2><div class="tf" id="tfBtns"></div></div>
+      <div id="chart"></div>
       <div class="legend" id="legend">
-        <label><input type="checkbox" data-k="lv"><i style="border-color:var(--green)"></i>支撐 <i style="border-color:var(--red)"></i>壓力 <i style="border-color:var(--orange);border-top-style:solid"></i>籌碼密集 <i style="border-color:var(--accent);border-top-style:dotted"></i>整數關口(情緒位)</label>
-        <label><input type="checkbox" data-k="ema"><i style="border-color:var(--yellow);border-top-style:solid"></i>20均線 <i style="border-color:var(--blue);border-top-style:solid"></i>50均線</label>
-        <label><input type="checkbox" data-k="bb"><i style="border-color:#94a3b8;border-top-style:solid"></i>布林通道</label>
-        <label><input type="checkbox" data-k="st"><i style="border-color:var(--green);border-top-style:solid;border-top-width:3px"></i><i style="border-color:var(--red);border-top-style:solid;border-top-width:3px"></i>SuperTrend</label>
+        <label><input type="checkbox" data-k="lv"><i style="border-color:var(--green)"></i>支撐壓力</label>
+        <label><input type="checkbox" data-k="ema"><i style="border-color:var(--yellow);border-top-style:solid"></i>均線</label>
+        <label><input type="checkbox" data-k="bb"><i style="border-color:#94a3b8;border-top-style:solid"></i>布林</label>
+        <label><input type="checkbox" data-k="st"><i style="border-color:var(--green);border-top-style:solid;border-top-width:3px"></i>SuperTrend</label>
       </div>
-      <div id="lvls" class="lvls"></div>
+      <details class="more"><summary>支撐、壓力、情緒位</summary><div id="lvls" class="lvls"></div></details>
     </div>
-    <!-- 短中長 -->
     <div id="cards" class="cards"></div>
-    <!-- 自訂一單 -->
-    <div class="card" id="custom" style="margin-top:12px">
-      <h2>自訂一單 <small>想做空、想買現貨、或不照趨勢燈?自己選,我照規則算倉位、提醒風險</small></h2>
+    <div class="card" id="custom">
+      <h2>自訂一單 <small>做空、現貨、逆勢都在這</small></h2>
       <div class="row">
         <div class="seg" id="cMarket"><button data-v="futures" class="on">合約</button><button data-v="spot">現貨</button></div>
         <div class="seg" id="cSide"><button data-v="long" class="on">做多</button><button data-v="short">做空</button></div>
         <select id="cTerm" style="width:auto"><option value="short">短線</option><option value="mid" selected>中線</option><option value="long">長線</option></select>
-        <button id="cAuto" class="on">用支撐壓力自動帶入</button>
+        <button id="cAuto" class="on">自動帶入</button>
       </div>
       <div class="grid" style="margin-top:8px">
-        <div><label>進場價</label><input id="cEntry" type="number" step="any"></div>
-        <div><label>止損價</label><input id="cStop" type="number" step="any"></div>
-        <div><label>止盈1(平一半,可不填)</label><input id="cTp1" type="number" step="any"></div>
-        <div><label>止盈2(可不填)</label><input id="cTp2" type="number" step="any"></div>
+        <div><label>進場</label><input id="cEntry" type="number" step="any"></div>
+        <div><label>止損</label><input id="cStop" type="number" step="any"></div>
+        <div><label>止盈1(可空)</label><input id="cTp1" type="number" step="any"></div>
+        <div><label>止盈2(可空)</label><input id="cTp2" type="number" step="any"></div>
       </div>
       <div id="cOut"></div>
     </div>
   </div>
+</section>
 
-  <aside>
-    <div class="card">
-      <h2>監控清單 <small>每 60 秒檢查</small></h2>
-      <div id="watch"></div>
-      <div class="row" style="margin-top:8px">
-        <input id="watchAdd" placeholder="加幣,例:WIF" style="flex:1">
-        <button id="watchBtn">加入</button>
+<!-- 監控 -->
+<section class="tab hidden" data-tab="watch">
+  <div class="two-col">
+    <div class="stack">
+      <div class="card">
+        <h2>監控清單 <small>每分鐘檢查</small></h2>
+        <div id="watch"></div>
+        <div class="row" style="margin-top:8px"><input id="watchAdd" placeholder="加幣,例:WIF" style="flex:1"><button id="watchBtn">加入</button></div>
+      </div>
+      <div class="card"><h2>市場情緒</h2><div id="senti" class="sub">讀取中…</div></div>
+    </div>
+    <div class="card"><h2>新聞 <small id="newsSym"></small></h2><div id="ai"></div><ul id="news" class="news"></ul></div>
+  </div>
+</section>
+
+<!-- 紀錄 -->
+<section class="tab hidden" data-tab="journal">
+  <div class="stack">
+    <div class="card" id="journal">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h2 style="margin:0">交易紀錄 <small id="storeWhere">存在電腦的「交易紀錄.json」</small></h2>
+        <div class="row">
+          <button id="expBtn" title="下載成一個檔案,拿到另一台裝置匯入">匯出</button>
+          <button id="impBtn" title="合併另一台裝置匯出的檔案">匯入</button>
+          <input id="impFile" type="file" accept=".json,application/json" hidden>
+        </div>
+      </div>
+      <details id="addBox" class="add">
+        <summary>+ 記一單</summary>
+        <div class="grid" style="margin-top:8px">
+          <div><label>市場</label><select id="jMarket"><option value="futures">合約</option><option value="spot">現貨</option></select></div>
+          <div><label>幣</label><input id="jSym"></div>
+          <div><label>期別</label><select id="jTerm"><option value="short">短線</option><option value="mid">中線</option><option value="long">長線</option></select></div>
+          <div><label>方向</label><select id="jSide"><option value="long">做多</option><option value="short">做空</option></select></div>
+          <div><label>進場</label><input id="jEntry" type="number" step="any"></div>
+          <div><label>止損</label><input id="jStop" type="number" step="any"></div>
+          <div><label>止盈1</label><input id="jTp1" type="number" step="any"></div>
+          <div><label>止盈2</label><input id="jTp2" type="number" step="any"></div>
+          <div><label>數量</label><input id="jQty" type="number" step="any"></div>
+          <div><label>槓桿</label><input id="jLev" type="number" step="1"></div>
+        </div>
+        <label style="margin-top:8px">進場理由</label><input id="jReason">
+        <label class="inl"><input type="checkbox" id="jRules">5 條鐵紀律都做到了</label>
+        <div class="row"><button id="jSave" class="on">儲存</button><button id="jCancel" hidden>取消修改</button></div>
+      </details>
+      <h3>持倉</h3><div id="openList"></div>
+      <h3>已結束</h3><div id="closedList"></div>
+    </div>
+    <div class="two-col" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
+      <div class="card"><h2>教練</h2><div id="coach"></div></div>
+      <div class="card check">
+        <h2>下單前 5 問</h2>
+        <label><input type="checkbox" class="rule">計畫卡顯示「可進場」</label>
+        <label><input type="checkbox" class="rule">止損單已經掛上去</label>
+        <label><input type="checkbox" class="rule">打到止損,我笑得出來</label>
+        <label><input type="checkbox" class="rule">不是攤平、不是想扳回</label>
+        <label><input type="checkbox" class="rule">說得出為什麼進場</label>
+        <div id="ruleOut"></div>
+        <div class="row" style="margin-top:10px"><button id="newTrade">清掉勾選</button></div>
+        <div id="dayOut"></div>
       </div>
     </div>
-    <div class="card">
-      <h2>市場情緒</h2>
-      <div id="senti" class="sub">讀取中…</div>
-    </div>
-    <div class="card">
-      <h2>時事 <small id="newsSym"></small></h2>
-      <div id="ai"></div>
-      <ul id="news" class="news"></ul>
-    </div>
-  </aside>
-</div>
+    <div class="card"><h2>最近刪除 <small>60 天內都能復原</small></h2><div id="trashList"></div></div>
+  </div>
+</section>
 
-<!-- 交易紀錄 -->
-<div class="card" id="journal">
-  <div class="row" style="justify-content:space-between;margin-bottom:10px">
-    <h2 style="margin:0">交易紀錄 <small id="storeWhere">存在資料夾裡的「交易紀錄.json」</small></h2>
+<!-- 現貨 -->
+<section class="tab hidden" data-tab="spot">
+  <div class="card" id="spotCard">
+    <h2>現貨 <small>沒有槓桿、不會爆倉</small></h2>
     <div class="row">
-      <button id="expBtn" title="下載成一個檔案,拿到另一台裝置匯入">匯出紀錄</button>
-      <button id="impBtn" title="把另一台裝置匯出的檔案合併進來">匯入紀錄</button>
-      <input id="impFile" type="file" accept=".json,application/json" hidden>
+      <div style="width:160px"><label>現貨可用 USDT</label><input id="spBudget" type="number" step="any"></div>
     </div>
-  </div>
-  <details id="addBox">
-    <summary style="cursor:pointer;color:var(--accent)">+ 記一單(或按計畫卡上的「記這一單」)</summary>
-    <div class="grid" style="margin-top:8px">
-      <div><label>市場</label><select id="jMarket"><option value="futures">合約</option><option value="spot">現貨</option></select></div>
-      <div><label>幣</label><input id="jSym"></div>
-      <div><label>期別</label><select id="jTerm"><option value="short">短線</option><option value="mid">中線</option><option value="long">長線</option></select></div>
-      <div><label>方向</label><select id="jSide"><option value="long">做多</option><option value="short">做空</option></select></div>
-      <div><label>進場價</label><input id="jEntry" type="number" step="any"></div>
-      <div><label>止損價</label><input id="jStop" type="number" step="any"></div>
-      <div><label>止盈1</label><input id="jTp1" type="number" step="any"></div>
-      <div><label>止盈2</label><input id="jTp2" type="number" step="any"></div>
-      <div><label>數量</label><input id="jQty" type="number" step="any"></div>
-      <div><label>槓桿</label><input id="jLev" type="number" step="1"></div>
+    <h3>定投</h3>
+    <details class="add">
+      <summary>+ 新增定投</summary>
+      <div class="grid" style="margin-top:8px">
+        <div><label>幣</label><input id="spSym" placeholder="例:BTC"></div>
+        <div><label>每期金額 U</label><input id="spAmt" type="number" step="any" placeholder="例:10"></div>
+        <div><label>多久一次</label><select id="spFreq"><option value="week">每週</option><option value="2week">每兩週</option><option value="month">每月</option></select></div>
+        <div><label>哪一天</label><select id="spDay"></select></div>
+        <div style="align-self:end"><button id="spAdd" class="on" style="width:100%">加入</button></div>
+      </div>
+    </details>
+    <div id="spotSum" class="sub" style="margin-top:8px"></div>
+    <div id="spotList"></div>
+    <h3>持倉</h3>
+    <div id="spotHold"></div>
+    <details class="add" style="margin-top:10px">
+      <summary>+ 記錄買入/賣出</summary>
+      <div class="grid" style="margin-top:8px">
+        <div><label>買或賣</label><select id="spOSide"><option value="buy">買入</option><option value="sell">賣出</option></select></div>
+        <div><label>幣</label><input id="spOSym" placeholder="例:SHIB"></div>
+        <div><label>金額 U</label><input id="spOU" type="number" step="any"></div>
+        <div><label>成交價</label><input id="spOP" type="number" step="any"></div>
+        <div style="align-self:end"><button id="spOAdd" style="width:100%">記錄</button></div>
+      </div>
+      <label class="inl"><input type="checkbox" id="spODeduct" checked>同步「現貨可用」(原本就有的持倉取消勾選)</label>
+    </details>
+    <h3>長期持有:目標比例</h3>
+    <div class="row">
+      <input id="tgSym" placeholder="幣,例:BTC" style="width:130px">
+      <input id="tgPct" type="number" placeholder="目標 %" style="width:100px">
+      <button id="tgAdd">加入/修改</button>
     </div>
-    <label style="margin-top:8px">進場理由(一句話)</label><input id="jReason">
-    <label class="inl"><input type="checkbox" id="jRules">下單前五條鐵紀律都做到了</label>
-    <button id="jSave" class="on">儲存這一單</button>
-  </details>
-  <h3>持倉中</h3><div id="openList"></div>
-  <h3>已結束</h3><div id="closedList"></div>
-</div>
-
-<!-- 現貨定投 -->
-<div class="card" id="spotCard">
-  <h2>現貨・定投・長期持有 <small>不用槓桿、不會爆倉。便宜時多買、貴時少買;到了定投日或「大筆買入區」會提醒</small></h2>
-  <div class="grid">
-    <div><label>現貨可用 USDT</label><input id="spBudget" type="number" step="any"></div>
-    <div><label>幣(現貨)</label><input id="spSym" placeholder="例:BTC"></div>
-    <div><label>每期基本金額 U</label><input id="spAmt" type="number" step="any" placeholder="例:10"></div>
-    <div><label>多久買一次</label><select id="spFreq"><option value="week">每週</option><option value="2week">每兩週</option><option value="month">每月</option></select></div>
-    <div><label>哪一天</label><select id="spDay"></select></div>
-    <div style="align-self:end"><button id="spAdd" class="on" style="width:100%">加入定投</button></div>
+    <div id="tgOut" style="margin-top:8px"></div>
   </div>
-  <div id="spotSum" class="sub" style="margin-top:8px"></div>
-  <div id="spotList"></div>
-  <h3>現貨持倉 <small>照紀錄算平均成本</small></h3>
-  <div id="spotHold"></div>
-  <details style="margin-top:10px">
-    <summary style="cursor:pointer;color:var(--accent)">+ 記錄其他買入/賣出(大筆買入、再平衡、原本就有的,例如 SHIB)</summary>
-    <div class="grid" style="margin-top:8px">
-      <div><label>買或賣</label><select id="spOSide"><option value="buy">買入</option><option value="sell">賣出</option></select></div>
-      <div><label>幣</label><input id="spOSym" placeholder="例:SHIB"></div>
-      <div><label>金額 U(買=花的,賣=拿回的)</label><input id="spOU" type="number" step="any"></div>
-      <div><label>成交價</label><input id="spOP" type="number" step="any"></div>
-      <div style="align-self:end"><button id="spOAdd" style="width:100%">記錄</button></div>
+</section>
+
+<!-- 回測 -->
+<section class="tab hidden" data-tab="lab">
+  <div class="card" id="btCard">
+    <h2>回測 <small>把規則放回過去跑一遍</small></h2>
+    <div class="row">
+      <input id="btSym" placeholder="幣,例:SOL" style="width:130px">
+      <select id="btTerm" style="width:auto">
+        <option value="short">短線(60 天)</option>
+        <option value="mid" selected>中線(540 天)</option>
+        <option value="long">長線(1500 天)</option>
+      </select>
+      <button id="btRun" class="on">回測</button>
+      <button id="btGrid">比較 24 組參數</button>
+      <button id="btAll">跑整個監控清單</button>
     </div>
-    <label class="inl"><input type="checkbox" id="spODeduct" checked>同步「現貨可用 USDT」(買 = 扣掉、賣 = 加回;原本就有的持倉請取消勾選)</label>
-  </details>
-  <h3>長期持有:目標比例 <small>定期把比例拉回來(再平衡)= 自動「漲多的賣一點、跌多的買一點」</small></h3>
-  <div class="row">
-    <input id="tgSym" placeholder="幣,例:BTC" style="width:130px">
-    <input id="tgPct" type="number" placeholder="目標 %" style="width:100px">
-    <button id="tgAdd">加入/修改</button>
+    <div id="btParams" class="sub" style="margin-top:6px"></div>
+    <div id="btOut"></div>
+    <div id="btChart" style="height:220px;margin-top:8px;display:none"></div>
+    <div id="btGridOut"></div>
   </div>
-  <div id="tgOut" style="margin-top:8px"></div>
-</div>
+</section>
 
-<!-- 回測室 -->
-<div class="card" id="btCard">
-  <h2>回測室 <small>把同一套規則丟回過去跑一遍,看真實勝率;比較參數,挑好的套用</small></h2>
-  <div class="row">
-    <input id="btSym" placeholder="幣,例:SOL" style="width:150px">
-    <select id="btTerm" style="width:auto">
-      <option value="short">短線(近 60 天)</option>
-      <option value="mid" selected>中線(近 540 天)</option>
-      <option value="long">長線(近 1500 天)</option>
-    </select>
-    <button id="btRun" class="on">回測</button>
-    <button id="btGrid">比較 24 組參數</button>
-    <button id="btAll">跑整個監控清單</button>
-  </div>
-  <div id="btParams" class="sub" style="margin-top:6px"></div>
-  <div id="btOut"></div>
-  <div id="btChart" style="height:220px;margin-top:8px;display:none"></div>
-  <div id="btGridOut"></div>
-</div>
-
-<div class="two">
-  <div class="card">
-    <h2>教練室 <small>根據你的紀錄調整</small></h2>
-    <div id="coach"></div>
-  </div>
-  <div class="card check">
-    <h2>下單前鐵紀律</h2>
-    <label><input type="checkbox" class="rule">計畫卡是綠燈或紅燈,而且「可進場」</label>
-    <label><input type="checkbox" class="rule">止損單已經「掛上去」了(不是心裡止損)</label>
-    <label><input type="checkbox" class="rule">打到止損虧的錢,我笑得出來</label>
-    <label><input type="checkbox" class="rule">這不是攤平、不是想把剛才虧的賺回來</label>
-    <label><input type="checkbox" class="rule">我說得出這單「為什麼進場」</label>
-    <div id="ruleOut"></div>
-    <div class="row" style="margin-top:10px"><button id="newTrade">新的一單(清勾選)</button></div>
-    <div id="dayOut"></div>
-  </div>
-</div>
-
-<footer>夏爾製 · 只做計算、紀律與提醒,不保證漲跌,也不是投資建議。手續費以吃單 0.05%×2 估算;爆倉價為約略值,以幣安 App 為準。</footer>
+<footer>希爾製 · 只做計算和紀律提醒,不是投資建議</footer>
 </main>
 <div id="toasts"></div>
 <script src="app.js"></script>

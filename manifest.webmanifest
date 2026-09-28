@@ -1,7 +1,7 @@
 {
   "name": "合約風控助手",
   "short_name": "風控助手",
-  "description": "夏爾製:K 線、短中長計畫、回測、定投,少開單、輕倉位、守規則。",
+  "description": "希爾製:K 線、短中長計畫、回測、定投,少開單、輕倉位、守規則。",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
