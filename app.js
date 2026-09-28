@@ -1769,9 +1769,9 @@ async function paperTick(){
       if(x.L ? m.st > x.stop : m.st < x.stop) x.stop = m.st;
     }
   }
-  // 2) 找新訊號:大週期 SuperTrend 定方向 + 主週期剛收盤突破
+  // 2) 找新訊號:大週期 SuperTrend 定方向 + 主週期剛收盤突破(被自我檢討暫停的幣跳過)
   for(const sym of S.watch){
-    const d = st.ana[sym]; if(!d) continue;
+    const d = st.ana[sym]; if(!d || (S.paper.skip || []).includes(sym)) continue;
     for(const key of S.paper.terms){
       const T = TERMS.find(t => t.key === key), m = d[T.tf], h = d[T.htf], p = st.price[sym];
       if(!m || !h || !isFinite(p) || P.pos.some(x => x.sym === sym && x.term === key)) continue;
@@ -1789,7 +1789,73 @@ async function paperTick(){
   if(!last || now - last.t >= 36e5){ P.eq.push({t: now, v: +paperEquity().toFixed(2)}); P.eq = P.eq.slice(-2000); changed = true; }
   if(changed) saveDB();
   renderPaper();
+  // 4) 每 7 天自我檢討一次
+  if(now - (S.paper.lastReview || S.paper.start) >= 7 * 864e5) paperReview(false);
 }
+
+/* ---------- 自我成長:員工每週自己檢討 ----------
+   做法:把過去的資料切成兩段,前 2/3「練習」、後 1/3「考試」(沒看過的資料)
+   8 組參數都跑一次,只有「練習和考試都賺、考試比現在好一截、考試單數夠多」才換;一次最多換一組
+   考試期一直賠的幣先暫停;每次檢討都寫進學習日誌,主人可以一鍵改回 */
+const PARAM_MENU = [];
+for(const bN of [20, 55]) for(const stK of [3, 4]) for(const regime of [false, true]) PARAM_MENU.push({bN, stK, regime});
+const pTxt = P => `前 ${P.bN} 根 · 因子 ${P.stK} · 大盤濾網${P.regime ? '開' : '關'}`;
+async function paperReview(manual){
+  if(st.reviewing) return;
+  st.reviewing = true; renderPaper();
+  try{
+    const data = [];
+    for(const sym of S.watch) for(const key of S.paper.terms){ try{ data.push({sym, ...(await btData(sym, key))}); }catch(e){} }
+    if(!data.length) throw new Error('讀不到歷史資料');
+    const evalP = P => {
+      const tr = [], te = [], per = {};
+      data.forEach(d => {
+        const cut = d.M[Math.floor(d.M.length * 2 / 3)].T;
+        const trades = simBreak(d.M, d.H, {...S.params, ...P}, d.RG);
+        tr.push(...trades.filter(t => t.t1 < cut));
+        const b = trades.filter(t => t.t0 >= cut);
+        te.push(...b); per[d.sym] = (per[d.sym] || []).concat(b);
+      });
+      return {P, train: btStats(tr), test: btStats(te), per};
+    };
+    const cur = {bN: S.params.bN || 20, stK: S.params.stK, regime: !!S.params.regime};
+    const same = (a, b) => a.bN === b.bN && a.stK === b.stK && a.regime === b.regime;
+    const res = PARAM_MENU.map(evalP), now = res.find(r => same(r.P, cur)) || evalP(cur);
+    const better = res.filter(r => !same(r.P, cur) && r.train.exp > 0 && r.test.exp > 0 && r.test.n >= 30 && r.test.exp >= now.test.exp + 0.05)
+                      .sort((a, b) => b.test.exp - a.test.exp)[0];
+    const use = better || now;
+    const skip = Object.entries(use.per).filter(([, tr]) => { const s = btStats(tr); return s.n >= 8 && s.exp < -0.1; }).map(([sym]) => sym);
+    const entry = {t: Date.now(), manual, from: cur, to: better ? better.P : null, curTest: now.test.exp, curN: now.test.n,
+                   newTest: better ? better.test.exp : null, newN: better ? better.test.n : null, skip};
+    db.paper.log = [...(db.paper.log || []), entry].slice(-50);
+    S.paper.skip = skip; S.paper.lastReview = Date.now();
+    if(better) S.params = {...S.params, ...better.P};
+    saveDB();
+    notify('模擬員工:每週檢討完成', better ? `換成「${pTxt(better.P)}」:考試期 ${now.test.exp.toFixed(2)}R → ${better.test.exp.toFixed(2)}R/單` : `維持不變(沒有明顯更好的)${skip.length ? ',暫停 ' + skip.map(coinOf).join('、') : ''}`, true);
+    if(better) tick().then(() => { if(chart) loadChart(); });
+  }catch(e){ toast('檢討失敗:' + e.message, 'bad'); }
+  st.reviewing = false; renderBtParams(); renderPaper();
+}
+function undoReview(i){
+  const e = (db.paper.log || [])[i]; if(!e || !e.to) return;
+  S.params = {...S.params, ...e.from}; e.undone = true; saveDB();
+  toast(`改回「${pTxt(e.from)}」。`); renderBtParams(); renderPaper();
+  tick().then(() => { if(chart) loadChart(); });
+}
+function renderLearn(){
+  const L = db.paper.log || [], last = S.paper.lastReview;
+  $('reviewBtn').disabled = !!st.reviewing;
+  $('reviewStat').textContent = st.reviewing ? '檢討中…(要抓不少歷史資料)'
+    : `目前:${pTxt({bN: S.params.bN || 20, stK: S.params.stK, regime: !!S.params.regime})}` + (last ? ` · 上次檢討 ${ago(last / 1000)}` : ' · 還沒檢討過')
+      + ((S.paper.skip || []).length ? ` · 暫停:${S.paper.skip.map(coinOf).join('、')}` : '');
+  $('learnLog').innerHTML = !L.length ? '<div class="sub">還沒有日誌。開始模擬 7 天後會自動檢討,也可以按「現在檢討」。</div>'
+    : L.map((e, i) => `<div class="trash-item"><span>${new Date(e.t).toLocaleDateString()} ${e.manual ? '(手動)' : ''} ·
+        ${e.to ? `<b class="g">換成</b> ${pTxt(e.to)} <small>(考試期 ${e.curTest.toFixed(2)}R → ${e.newTest.toFixed(2)}R/單,${e.newN} 單)</small>`
+               : `維持不變 <small>(考試期 ${e.curTest.toFixed(2)}R/單,${e.curN} 單)</small>`}
+        ${e.skip.length ? `<br><small>暫停:${e.skip.map(coinOf).join('、')}(考試期一直賠)</small>` : ''}</span>
+        ${e.to && !e.undone && i === L.length - 1 ? `<button onclick="undoReview(${i})">改回</button>` : e.undone ? '<small>已改回</small>' : ''}</div>`).reverse().join('');
+}
+$('reviewBtn').onclick = () => paperReview(true);
 
 // 回測預期:監控清單各幣「突破順勢」的回測平均(回測分頁跑過才有)
 function paperExpect(){
@@ -1800,6 +1866,7 @@ function paperExpect(){
 let paperChart, paperLine;
 function renderPaper(){
   const C = S.paper, P = db.paper, box = $('paperOut');
+  renderLearn();
   $('paperBtn').textContent = C.on ? '暫停' : C.start ? '繼續' : '開始模擬';
   $('paperBtn').classList.toggle('on', !C.on);
   $('paperCash0').value = C.cash0; $('paperRisk').value = C.risk;
